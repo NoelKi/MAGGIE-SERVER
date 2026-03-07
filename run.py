@@ -13,4 +13,4 @@ if __name__ == "__main__":
     print("  Running on http://localhost:5050")
     print("========================================\n")
 
-    app.run(host="0.0.0.0", port=5050, debug=False)
+    app.run(host="0.0.0.0", port=3000, debug=False)
