@@ -1,0 +1,43 @@
+services:
+
+  # ── PostgreSQL – User-Daten ────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: maggie_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       ${POSTGRES_DB:-maggie_users}
+      POSTGRES_USER:     ${POSTGRES_USER:-maggie}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-maggie_secret}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-maggie} -d ${POSTGRES_DB:-maggie_users}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── InfluxDB – Telemetrie-Zeitreihen ──────────────────────────────────────
+  influxdb:
+    image: influxdb:2.7
+    container_name: maggie_influxdb
+    restart: unless-stopped
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE:        setup
+      DOCKER_INFLUXDB_INIT_USERNAME:    admin
+      DOCKER_INFLUXDB_INIT_PASSWORD:    maggie2026
+      DOCKER_INFLUXDB_INIT_ORG:        ${INFLUX_ORG:-MAGGIE}
+      DOCKER_INFLUXDB_INIT_BUCKET:     ${INFLUX_BUCKET:-MAGGIE_DB}
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: ${INFLUX_TOKEN:-}
+    ports:
+      - "8086:8086"
+    volumes:
+      - influxdb-data:/var/lib/influxdb2
+
+volumes:
+  postgres-data:
+    name: maggie_postgres_data
+  influxdb-data:
+    name: maggie_influxdb_data
