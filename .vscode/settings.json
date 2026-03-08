@@ -1,0 +1,9 @@
+{
+  "python.analysis.exclude": [
+    "**/migrations/**",
+    "**/MAGGIE_SERVER/migrations/**"
+  ],
+  "python.analysis.ignore": [
+    "**/migrations/**"
+  ]
+}
