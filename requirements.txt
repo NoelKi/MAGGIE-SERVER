@@ -1,6 +1,8 @@
 Flask==3.1.*
 flask-cors==5.*
 flask-jwt-extended==4.*
+flask-socketio==5.*
+eventlet==0.37.*
 python-dotenv==1.*
 bcrypt==4.*
 influxdb-client==1.*

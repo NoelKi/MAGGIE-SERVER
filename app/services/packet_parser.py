@@ -91,6 +91,11 @@ TYPE_IMU         = 0x01
 TYPE_ENVIRONMENT = 0x02
 TYPE_GPS         = 0x03
 TYPE_SYSTEM      = 0x04
+TYPE_ARM_STATUS  = 0x05       # Roboterarm-Status (STM32 → OBC → GS)
+TYPE_HRDM_STATUS = 0x06       # HRDM-Status
+TYPE_LIGHT_STATUS = 0x07      # Light-Unit-Status
+TYPE_MISSION_STATE = 0x08     # Mission-State-Update vom OBC
+TYPE_CMD_ACK     = 0x09       # Command-Acknowledgement vom OBC
 TYPE_HEARTBEAT   = 0xFF
 
 # Flag-Bits
@@ -117,11 +122,16 @@ class RexusHeader:
     def type_name(self) -> str:
         """Gibt den Measurement-Typ als lesbaren String zurück (z.B. 'imu', 'gps')."""
         return {
-            TYPE_IMU:         "imu",
-            TYPE_ENVIRONMENT: "environment",
-            TYPE_GPS:         "gps",
-            TYPE_SYSTEM:      "system",
-            TYPE_HEARTBEAT:   "heartbeat",
+            TYPE_IMU:           "imu",
+            TYPE_ENVIRONMENT:   "environment",
+            TYPE_GPS:           "gps",
+            TYPE_SYSTEM:        "system",
+            TYPE_ARM_STATUS:    "arm",
+            TYPE_HRDM_STATUS:   "hrdm",
+            TYPE_LIGHT_STATUS:  "light",
+            TYPE_MISSION_STATE: "mission_state",
+            TYPE_CMD_ACK:       "cmd_ack",
+            TYPE_HEARTBEAT:     "heartbeat",
         }.get(self.pkt_type, f"unknown_0x{self.pkt_type:02X}")
 
     @property
@@ -215,12 +225,69 @@ def _parse_heartbeat(payload: bytes) -> dict:
     return {"boot_count": boot_count}
 
 
+def _parse_arm_status(payload: bytes) -> dict:
+    """Roboterarm-Status vom STM32 via OBC.
+    6× float32: j1_pos, j2_pos, j1_current, j2_current + uint8 error + uint8 flags"""
+    j1_pos, j2_pos, j1_cur, j2_cur = struct.unpack_from(">ffff", payload)
+    error_code, status_flags = struct.unpack_from(">BB", payload, 16)
+    return {
+        "joint1_position": round(j1_pos, 3),
+        "joint2_position": round(j2_pos, 3),
+        "joint1_current":  round(j1_cur, 3),
+        "joint2_current":  round(j2_cur, 3),
+        "error_code":      error_code,
+        "status_flags":    status_flags,
+    }
+
+
+def _parse_hrdm_status(payload: bytes) -> dict:
+    """HRDM-Status: uint8 deployed, uint8 locked"""
+    deployed, locked = struct.unpack_from(">BB", payload)
+    return {
+        "deployed": bool(deployed),
+        "locked":   bool(locked),
+    }
+
+
+def _parse_light_status(payload: bytes) -> dict:
+    """Light-Unit-Status: uint8 on"""
+    (on,) = struct.unpack_from(">B", payload)
+    return {"on": bool(on)}
+
+
+def _parse_mission_state(payload: bytes) -> dict:
+    """Mission-State-Update vom OBC: uint8 state_idx, uint8 mode_idx"""
+    state_idx, mode_idx = struct.unpack_from(">BB", payload)
+    states = ("STARTUP", "PREFLIGHT_CHECK", "STANDBY", "EXPERIMENT",
+              "TESTING", "HARDWARE_TESTING", "SHUTDOWN")
+    modes = ("NONE", "FLIGHT", "TESTING", "HARDWARE_TEST")
+    return {
+        "mission_state":  states[state_idx] if state_idx < len(states) else f"UNKNOWN_{state_idx}",
+        "operation_mode": modes[mode_idx] if mode_idx < len(modes) else f"UNKNOWN_{mode_idx}",
+    }
+
+
+def _parse_cmd_ack(payload: bytes) -> dict:
+    """Command-Acknowledgement: uint8 cmd_id, uint8 success, uint16 detail_code"""
+    cmd_id, success, detail_code = struct.unpack_from(">BBH", payload)
+    return {
+        "cmd_id":      cmd_id,
+        "success":     bool(success),
+        "detail_code": detail_code,
+    }
+
+
 _PAYLOAD_PARSERS = {
-    TYPE_IMU:         _parse_imu,
-    TYPE_ENVIRONMENT: _parse_environment,
-    TYPE_GPS:         _parse_gps,
-    TYPE_SYSTEM:      _parse_system,
-    TYPE_HEARTBEAT:   _parse_heartbeat,
+    TYPE_IMU:           _parse_imu,
+    TYPE_ENVIRONMENT:   _parse_environment,
+    TYPE_GPS:           _parse_gps,
+    TYPE_SYSTEM:        _parse_system,
+    TYPE_ARM_STATUS:    _parse_arm_status,
+    TYPE_HRDM_STATUS:   _parse_hrdm_status,
+    TYPE_LIGHT_STATUS:  _parse_light_status,
+    TYPE_MISSION_STATE: _parse_mission_state,
+    TYPE_CMD_ACK:       _parse_cmd_ack,
+    TYPE_HEARTBEAT:     _parse_heartbeat,
 }
 
 
