@@ -1,4 +1,15 @@
 {
   "include": ["app", "config", "tools", "run.py"],
-  "exclude": ["migrations", ".venv", "__pycache__"]
+  "exclude": [
+    "migrations",
+    ".venv",
+    "__pycache__",
+    "**/migrations/**"
+  ],
+  "venvPath": ".",
+  "venv": ".venv",
+  "pythonVersion": "3.10",
+  "typeCheckingMode": "basic",
+  "reportMissingImports": "warning",
+  "reportMissingTypeStubs": false
 }

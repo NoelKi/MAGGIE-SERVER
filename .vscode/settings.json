@@ -1,9 +1,4 @@
 {
-  "python.analysis.exclude": [
-    "**/migrations/**",
-    "**/MAGGIE_SERVER/migrations/**"
-  ],
-  "python.analysis.ignore": [
-    "**/migrations/**"
-  ]
+  "python.defaultInterpreterPath": "/Users/kieranmai/Development Projects/MAGGIE/MAGGIE_SERVER/.venv/bin/python",
+  "python.linting.pylintEnabled": false
 }
