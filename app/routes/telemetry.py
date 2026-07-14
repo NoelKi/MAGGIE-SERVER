@@ -1,5 +1,4 @@
 from flask import Blueprint, request, jsonify
-from flask_jwt_extended import jwt_required, get_jwt
 
 from app.services.influx_service import write_telemetry, write_telemetry_batch, query_telemetry, ping_influx
 
@@ -11,11 +10,9 @@ telemetry_bp = Blueprint("telemetry", __name__)
 # ──────────────────────────────────────────────────────────────────────────────
 
 @telemetry_bp.route("/telemetry", methods=["POST"])
-@jwt_required()
 def ingest():
     """
     Schreibt einen Telemetrie-Datenpunkt in InfluxDB.
-    Nur Nutzer mit Rolle 'admin' oder 'operator' erlaubt.
 
     Body (JSON):
     {
@@ -29,10 +26,6 @@ def ingest():
         }
     }
     """
-    claims = get_jwt()
-    if claims.get("role") not in ("admin", "operator"):
-        return jsonify({"error": "Forbidden"}), 403
-
     body = request.get_json(silent=True)
     if not body:
         return jsonify({"error": "JSON body required"}), 400
@@ -59,25 +52,25 @@ def ingest():
 # ──────────────────────────────────────────────────────────────────────────────
 
 @telemetry_bp.route("/telemetry", methods=["GET"])
-@jwt_required()
 def fetch():
     """
     Liest Telemetrie-Datenpunkte aus InfluxDB.
 
     Query-Parameter:
-        measurement  (str,  Pflicht)  – z.B. "sensors"
-        start        (str,  optional) – Flux-Zeit, Standard "-1h"
-        stop         (str,  optional) – Flux-Zeit, Standard "now()"
-        limit        (int,  optional) – Max. Datenpunkte, Standard 500
+        measurement    (str,  Pflicht)  – z.B. "imu"
+        start / range  (str,  optional) – Flux-Zeit, Standard "-1h"
+        stop           (str,  optional) – Flux-Zeit, Standard "now()"
+        limit          (int,  optional) – Max. Datenpunkte, Standard 500
 
     Beispiel:
-        GET /api/telemetry?measurement=sensors&start=-30m&limit=100
+        GET /api/telemetry?measurement=imu&range=-30m&limit=100
     """
     measurement = request.args.get("measurement", "").strip()
     if not measurement:
         return jsonify({"error": "'measurement' query param is required"}), 400
 
-    start = request.args.get("start", "-1h")
+    # "range" ist der vom Frontend genutzte Alias für "start".
+    start = request.args.get("start") or request.args.get("range") or "-1h"
     stop  = request.args.get("stop",  "now()")
 
     try:
@@ -98,7 +91,6 @@ def fetch():
 # ──────────────────────────────────────────────────────────────────────────────
 
 @telemetry_bp.route("/telemetry/ping", methods=["GET"])
-@jwt_required()
 def influx_ping():
     """
     GET /api/telemetry/ping
@@ -113,7 +105,6 @@ def influx_ping():
 # ──────────────────────────────────────────────────────────────────────────────
 
 @telemetry_bp.route("/telemetry/batch", methods=["POST"])
-@jwt_required()
 def ingest_batch():
     """
     Schreibt mehrere Telemetrie-Datenpunkte in einem einzigen Request.
@@ -135,10 +126,6 @@ def ingest_batch():
         ]
     }
     """
-    claims = get_jwt()
-    if claims.get("role") not in ("admin", "operator"):
-        return jsonify({"error": "Forbidden"}), 403
-
     body = request.get_json(silent=True)
     if not body:
         return jsonify({"error": "JSON body required"}), 400

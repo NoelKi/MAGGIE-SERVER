@@ -66,6 +66,9 @@ def write_telemetry_batch(points: list[dict[str, Any]]) -> int:
                 - measurement (str, Pflicht)
                 - fields      (dict, Pflicht)
                 - tags        (dict, optional)
+                - time_ms     (int, optional) – Zeitstempel epoch ms; sonst "jetzt".
+                  Wichtig, damit gebündelte Punkte NICHT alle denselben
+                  Zeitstempel bekommen (sonst Überschreiben in gleicher Serie).
 
     Returns:
         Anzahl erfolgreich geschriebener Punkte
@@ -82,7 +85,8 @@ def write_telemetry_batch(points: list[dict[str, Any]]) -> int:
         for key, value in p["fields"].items():
             point = point.field(key, value)
 
-        point = point.time(now, WritePrecision.MS)
+        t = p.get("time_ms")
+        point = point.time(t if t is not None else now, WritePrecision.MS)
         records.append(point)
 
     with _client() as client:
@@ -121,10 +125,14 @@ def query_telemetry(
     bucket = current_app.config["INFLUX_BUCKET"]
     org    = current_app.config["INFLUX_ORG"]
 
+    # sort desc + limit → die NEUESTEN n Punkte je Feld (nicht die ältesten).
+    # Wichtig fürs Live-Delta-Polling: bei kleinem Zeitfenster kommen so die
+    # aktuellsten Messwerte zurück.
     flux = f"""
         from(bucket: "{bucket}")
           |> range(start: {start}, stop: {stop})
           |> filter(fn: (r) => r["_measurement"] == "{measurement}")
+          |> sort(columns: ["_time"], desc: true)
           |> limit(n: {limit})
     """
 

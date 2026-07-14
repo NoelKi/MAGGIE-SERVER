@@ -7,10 +7,8 @@ load_dotenv()
 class Config:
     """Basis-Konfiguration."""
     SECRET_KEY = os.getenv("SECRET_KEY", "fallback-secret")
-    JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "fallback-jwt-secret")
-    JWT_ACCESS_TOKEN_EXPIRES = 3600  # 1 Stunde
 
-    # ── PostgreSQL – User-Daten ───────────────────────────────────────
+    # ── PostgreSQL ────────────────────────────────────────────────────
     POSTGRES_USER     = os.getenv("POSTGRES_USER", "maggie")
     POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "maggie_secret")
     POSTGRES_HOST     = os.getenv("POSTGRES_HOST", "localhost")
@@ -38,4 +36,16 @@ class Config:
     UDP_HOST    = os.getenv("UDP_HOST", "0.0.0.0")
     UDP_PORT    = int(os.getenv("UDP_PORT", "9000"))
     UDP_TIMEOUT = float(os.getenv("UDP_TIMEOUT", "2.0"))
+
+    # ── RXSM Downlink (serieller Port) ────────────────────────────────
+    # RXSM-Downlink kommt als serieller Stream (RS-232/RS-422/USB) an.
+    # SERIAL_PORT leer lassen → Port wird zur Laufzeit in der GUI gewählt.
+    #   macOS:  /dev/tty.usbserial-XXXX
+    #   Linux:  /dev/ttyUSB0
+    #   Windows: COM3
+    SERIAL_PORT      = os.getenv("SERIAL_PORT", "")
+    SERIAL_BAUD      = int(os.getenv("SERIAL_BAUD", "38400"))   # RXSM Standard: 38400 8N1
+    SERIAL_AUTOSTART = os.getenv("SERIAL_AUTOSTART", "true").lower() == "true"
+    # Größe des In-Memory-Ringpuffers für den Live-Hexdump (Bytes)
+    SERIAL_BUFFER_BYTES = int(os.getenv("SERIAL_BUFFER_BYTES", str(256 * 1024)))
 
