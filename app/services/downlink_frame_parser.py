@@ -50,15 +50,27 @@ DL_START = 0x7E
 DL_END   = 0x7F
 
 # MSGID1 – Subsystem
-SUBSYS_IMU = 0x01
+SUBSYS_IMU   = 0x01
+SUBSYS_MOTOR = 0x02
 
 # MSGID2 – Nachrichtentyp (IMU-Subsystem)
 IMU_ACCEL = 0x01
 IMU_GYRO  = 0x02
 
+# MSGID2 – Nachrichtentyp (MOTOR-Subsystem)
+MOTOR_STATE = 0x01
+
 # STATUS1-Bits
 STATUS1_SYSTEM_HEALTHY = 0x01
 STATUS1_IMU_VALID      = 0x02
+
+# MOTOR-STATE-Bits (DATA[6], identisch zu telemetry_hal.hpp)
+MOTOR_STATE_ON        = 0x01
+MOTOR_STATE_MOVING    = 0x02
+MOTOR_STATE_AT_TARGET = 0x04
+
+# Motor-Positionsskalierung (identisch zur OBC-Firmware motor_hal.hpp)
+MOTOR_COUNTS_PER_REV = 4600.0    # Encoder-Counts pro voller Umdrehung
 
 # Skalierungsfaktoren (identisch zur OBC-Firmware imu_hal.cpp)
 ACCEL_SCALE = 9.80665 / 10920.0    # int16-Count → m/s²
@@ -189,9 +201,24 @@ def _decode_imu_gyro(data: bytes) -> dict:
     }
 
 
+def _decode_motor(data: bytes) -> dict:
+    # DATA: [pos(int32 BE) pwm(int16 BE) state(uint8) spare]
+    # 'pwm' = vorzeichenbehafteter PWM-Wert (-255..255).
+    position, pwm, state, _spare = struct.unpack_from(">ihBB", data)
+    return {
+        "position":    position,
+        "revolutions": round(position / MOTOR_COUNTS_PER_REV, 4),
+        "pwm":         pwm,
+        "on":          bool(state & MOTOR_STATE_ON),
+        "moving":      bool(state & MOTOR_STATE_MOVING),
+        "at_target":   bool(state & MOTOR_STATE_AT_TARGET),
+    }
+
+
 # ── Registrierte Nachrichtentypen ─────────────────────────────────────────────────
 register_message(SUBSYS_IMU, IMU_ACCEL, "imu", "accel", "imu", _decode_imu_accel)
 register_message(SUBSYS_IMU, IMU_GYRO,  "imu", "gyro",  "imu", _decode_imu_gyro)
+register_message(SUBSYS_MOTOR, MOTOR_STATE, "motor", "state", "motor", _decode_motor)
 
 # NEUEN WERT HINZUFÜGEN — Beispiel (später, wenn der OBC z.B. Wiegezellen sendet):
 #

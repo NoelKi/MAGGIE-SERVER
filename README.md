@@ -356,7 +356,6 @@ BODEN ◄─[TM Downlink]───── RXSM ◄─[UDP/ETH]─ OBC (Experiment
 │ PAYLOAD (48 Bytes)  — abhängig vom Type                     │
 │  0x01  IMU         6× float32  ax ay az gx gy gz            │
 │  0x02  ENVIRONMENT 3× float32  temp pressure humidity       │
-│  0x03  GPS         4× float32  lat lon alt speed            │
 │  0x04  SYSTEM      4× float32  cpu_temp bat_v bat_i uptime  │
 │  0xFF  HEARTBEAT   1× uint32   boot_count                   │
 └─────────────────────────────────────────────────────────────┘

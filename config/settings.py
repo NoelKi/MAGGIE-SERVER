@@ -49,3 +49,12 @@ class Config:
     # Größe des In-Memory-Ringpuffers für den Live-Hexdump (Bytes)
     SERIAL_BUFFER_BYTES = int(os.getenv("SERIAL_BUFFER_BYTES", str(256 * 1024)))
 
+    # ── RXSM Telecommand-Uplink (separater serieller TX-Port) ─────────────
+    # Sendet Telecommands (z.B. Motor-Steuerung) an das RXSM-(Test-)Modul,
+    # das sie über die UART an den OBC weiterreicht. Eigener Port, getrennt
+    # vom read-only Downlink oben. TC_SERIAL_PORT leer lassen → zur Laufzeit
+    # über /api/command/connect wählen.
+    TC_SERIAL_PORT = os.getenv("TC_SERIAL_PORT", "")
+    TC_SERIAL_BAUD = int(os.getenv("TC_SERIAL_BAUD", "38400"))
+    TC_AUTOSTART   = os.getenv("TC_AUTOSTART", "true").lower() == "true"
+

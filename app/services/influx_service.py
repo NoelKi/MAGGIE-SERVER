@@ -33,7 +33,7 @@ def write_telemetry(measurement: str, fields: dict[str, Any], tags: dict[str, st
     Schreibt einen einzelnen Telemetrie-Datenpunkt in InfluxDB.
 
     Args:
-        measurement: Name der Messung, z.B. "sensors" oder "gps"
+        measurement: Name der Messung, z.B. "imu" oder "motor"
         fields:      Dict mit Messwerten, z.B. {"temperature": 23.4, "pressure": 1013.25}
         tags:        Optionale Metadaten, z.B. {"sensor_id": "imu_1", "unit": "celsius"}
     """

@@ -41,7 +41,6 @@ MAGGIE PAKETSTRUKTUR (Big-Endian, gesamt 64 Bytes fest):
 │ PAYLOAD (48 Bytes)  — abhängig von Type                     │
 │  TYPE 0x01  IMU         6× float32  (ax ay az gx gy gz)    │
 │  TYPE 0x02  ENVIRONMENT 3× float32  (temp pressure humidity)│
-│  TYPE 0x03  GPS         4× float32  (lat lon alt speed)     │
 │  TYPE 0x04  SYSTEM      4× float32  (cpu_temp bat_v bat_i  │
 │                                      uptime_s)              │
 │  TYPE 0xFF  HEARTBEAT   1× uint32   (boot_count)            │
@@ -89,7 +88,6 @@ PACKET_SIZE     = HEADER_SIZE + PAYLOAD_SIZE       # 64 Bytes gesamt
 # Measurement-Type-IDs
 TYPE_IMU         = 0x01
 TYPE_ENVIRONMENT = 0x02
-TYPE_GPS         = 0x03
 TYPE_SYSTEM      = 0x04
 TYPE_HEARTBEAT   = 0xFF
 
@@ -115,11 +113,10 @@ class RexusHeader:
 
     @property
     def type_name(self) -> str:
-        """Gibt den Measurement-Typ als lesbaren String zurück (z.B. 'imu', 'gps')."""
+        """Gibt den Measurement-Typ als lesbaren String zurück (z.B. 'imu', 'system')."""
         return {
             TYPE_IMU:         "imu",
             TYPE_ENVIRONMENT: "environment",
-            TYPE_GPS:         "gps",
             TYPE_SYSTEM:      "system",
             TYPE_HEARTBEAT:   "heartbeat",
         }.get(self.pkt_type, f"unknown_0x{self.pkt_type:02X}")
@@ -186,17 +183,6 @@ def _parse_environment(payload: bytes) -> dict:
     }
 
 
-def _parse_gps(payload: bytes) -> dict:
-    """4× float32: latitude [°], longitude [°], altitude [m], speed [m/s]"""
-    lat, lon, alt, speed = struct.unpack_from(">ffff", payload)
-    return {
-        "latitude":  round(lat, 6),
-        "longitude": round(lon, 6),
-        "altitude":  round(alt, 2),
-        "speed":     round(speed, 3),
-    }
-
-
 def _parse_system(payload: bytes) -> dict:
     """4× float32: cpu_temp [°C], battery_voltage [V], battery_current [mA],
     uptime_s [s]"""
@@ -218,7 +204,6 @@ def _parse_heartbeat(payload: bytes) -> dict:
 _PAYLOAD_PARSERS = {
     TYPE_IMU:         _parse_imu,
     TYPE_ENVIRONMENT: _parse_environment,
-    TYPE_GPS:         _parse_gps,
     TYPE_SYSTEM:      _parse_system,
     TYPE_HEARTBEAT:   _parse_heartbeat,
 }
@@ -308,7 +293,6 @@ def build_packet(
     payload_fields muss zu pkt_type passen:
       TYPE_IMU:         {"ax":..., "ay":..., "az":..., "gx":..., "gy":..., "gz":...}
       TYPE_ENVIRONMENT: {"temperature":..., "pressure":..., "humidity":...}
-      TYPE_GPS:         {"latitude":..., "longitude":..., "altitude":..., "speed":...}
       TYPE_SYSTEM:      {"cpu_temp":..., "battery_voltage":...,
                          "battery_current":..., "uptime_s":...}
       TYPE_HEARTBEAT:   {"boot_count":...}
@@ -326,12 +310,6 @@ def build_packet(
             payload_fields["temperature"],
             payload_fields["pressure"],
             payload_fields["humidity"],
-        )
-    elif pkt_type == TYPE_GPS:
-        payload = struct.pack(
-            ">ffff",
-            payload_fields["latitude"], payload_fields["longitude"],
-            payload_fields["altitude"], payload_fields["speed"],
         )
     elif pkt_type == TYPE_SYSTEM:
         payload = struct.pack(

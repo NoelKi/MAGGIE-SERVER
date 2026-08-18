@@ -33,7 +33,6 @@ from app.services.packet_parser import (
     build_packet,
     TYPE_IMU,
     TYPE_ENVIRONMENT,
-    TYPE_GPS,
     TYPE_SYSTEM,
     TYPE_HEARTBEAT,
     FLAG_LIFTOFF,
@@ -88,14 +87,6 @@ def simulate_flight(host: str, port: int, count: int, rate: float) -> None:
             })
             send_packet(sock, host, port, pkt); seq += 1; t_ms += int(1000 / rate)
 
-            pkt = build_packet(TYPE_GPS, seq, t_ms, flags, {
-                "latitude":  68.425 + i * 0.0001,
-                "longitude": 21.075 + i * 0.00005,
-                "altitude":  alt,
-                "speed":     i * 8.0 + random.uniform(-2, 2),
-            })
-            send_packet(sock, host, port, pkt); seq += 1; t_ms += int(1000 / rate)
-
             pkt = build_packet(TYPE_SYSTEM, seq, t_ms, flags, {
                 "cpu_temp":        35.0 + random.uniform(-2, 2),
                 "battery_voltage": 3.85 - i * 0.002,
@@ -103,7 +94,7 @@ def simulate_flight(host: str, port: int, count: int, rate: float) -> None:
                 "uptime_s":        t_ms / 1000.0,
             })
             send_packet(sock, host, port, pkt); seq += 1; t_ms += int(1000 / rate)
-            time.sleep(delay * 4)
+            time.sleep(delay * 3)
 
         # ── Phase 3: Brennschluss & Küstenflug ────────────────────────
         print("💨  Küstenflug (Motor aus)...")
@@ -125,11 +116,11 @@ def simulate_flight(host: str, port: int, count: int, rate: float) -> None:
         print("🎯  Apogee erreicht!")
         flags = FLAG_LIFTOFF | FLAG_SODS | FLAG_SOEX | FLAG_BURNOUT | FLAG_APOGEE
         for i in range(5):
-            pkt = build_packet(TYPE_GPS, seq, t_ms, flags, {
-                "latitude":  68.435,
-                "longitude": 21.082,
-                "altitude":  80000.0 + random.uniform(-100, 100),  # ~80 km
-                "speed":     random.uniform(-5, 5),
+            pkt = build_packet(TYPE_SYSTEM, seq, t_ms, flags, {
+                "cpu_temp":        35.0 + random.uniform(-2, 2),
+                "battery_voltage": 3.80 - i * 0.002,
+                "battery_current": 150.0 + random.uniform(-10, 10),
+                "uptime_s":        t_ms / 1000.0,
             })
             send_packet(sock, host, port, pkt); seq += 1; t_ms += 500
             time.sleep(0.5)

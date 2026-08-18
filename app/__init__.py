@@ -25,10 +25,12 @@ def create_app():
     from app.routes.health import health_bp
     from app.routes.telemetry import telemetry_bp
     from app.routes.downlink import downlink_bp
+    from app.routes.command import command_bp
 
     app.register_blueprint(health_bp, url_prefix="/api")
     app.register_blueprint(telemetry_bp, url_prefix="/api")
     app.register_blueprint(downlink_bp, url_prefix="/api")
+    app.register_blueprint(command_bp, url_prefix="/api")
 
     # ── Listener nur einmal starten (nicht im Werkzeug-Reloader-Parent) ─
     import os as _os
@@ -40,5 +42,9 @@ def create_app():
         # Serieller RXSM-Downlink (Rohbytes → Live-Hexdump)
         from app.services.serial_listener import init_serial_listener
         init_serial_listener(app)
+
+        # Serieller RXSM-Telecommand-Uplink (Motor-Steuerung → OBC)
+        from app.services.tc_uplink import init_tc_uplink
+        init_tc_uplink(app)
 
     return app
