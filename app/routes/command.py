@@ -21,6 +21,7 @@ Motor-Command-Frame (6 Bytes, in der SDC-Nutzlast) — identisch zur OBC-Firmwar
 
 from flask import Blueprint, request, jsonify
 
+from app.extensions import socketio
 from app.services.tc_uplink import tc
 
 command_bp = Blueprint("command", __name__)
@@ -84,7 +85,19 @@ def motor():
     try:
         result = tc.send_sdc(dest, payload)
     except RuntimeError as exc:
+        # Auch der Fehlschlag geht an alle Clients — nicht nur an den Absender
+        socketio.emit("command:ack", {
+            "cmd_id":  -1,
+            "success": False,
+            "detail":  f"motor {action}: {exc}",
+        })
         return jsonify({"error": str(exc)}), 503
+
+    socketio.emit("command:ack", {
+        "cmd_id":  result["mcnt"],
+        "success": True,
+        "detail":  f"motor {action} → dest {result['dest']}",
+    })
 
     return jsonify({
         "status":   "ok",

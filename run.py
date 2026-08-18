@@ -1,4 +1,5 @@
 from app import create_app
+from app.extensions import socketio
 
 app = create_app()
 
@@ -20,9 +21,24 @@ if __name__ == "__main__":
     print("  GET  /api/downlink/raw      — Live raw bytes (hex)")
     print("  GET  /api/downlink/ports    — List serial ports")
     print("  POST /api/downlink/connect  — Connect to a serial port")
+    print("  ── Realtime (Socket.IO) ───────────────")
+    print("  WS   /socket.io             — obc:state / obc:heartbeat /")
+    print("                                obc:flags / command:ack /")
+    print("                                telemetry:imu|environment|system")
     print("  Running on http://localhost:3000")
     print("========================================\n")
 
-    # threaded=True: paralleles Request-Handling — eine langsame InfluxDB-Query
-    # blockiert so nicht das Live-Frame-Polling der GUI.
-    app.run(host="0.0.0.0", port=3000, debug=True, threaded=True)
+    # socketio.run statt app.run: Werkzeug allein kann kein WebSocket-Upgrade
+    # und würde /socket.io-Verbindungen mit ECONNRESET abbrechen.
+    # allow_unsafe_werkzeug=True: Dev-Server bewusst erlaubt — für den Flug
+    # gehört hier ein produktiver WSGI-Server (gunicorn + gevent) hin.
+    # debug=app.debug: derselbe Wert, den create_app() für den Listener-Guard
+    # benutzt hat (config.settings.Config.DEBUG) — sonst laufen Reloader und
+    # Guard auseinander.
+    socketio.run(
+        app,
+        host="0.0.0.0",
+        port=3000,
+        debug=app.debug,
+        allow_unsafe_werkzeug=True,
+    )

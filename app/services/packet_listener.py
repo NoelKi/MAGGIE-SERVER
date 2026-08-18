@@ -2,7 +2,8 @@
 MAGGIE – UDP Packet Listener
 =============================
 
-Empfängt binäre OBC-Pakete über UDP und schreibt sie in InfluxDB.
+Empfängt binäre OBC-Pakete über UDP, broadcastet sie live per Socket.IO an
+die Ground Station und schreibt sie in InfluxDB.
 
 Läuft als Daemon-Thread parallel zum Flask-Server.
 
@@ -21,12 +22,15 @@ import logging
 import threading
 from flask import Flask
 
+from app.extensions import socketio
 from app.services.packet_parser import (
     parse_packet,
     TYPE_HEARTBEAT,
+    TYPE_SYSTEM,
     PACKET_SIZE,
 )
 from app.services.influx_service import write_telemetry
+from app.services.obc_state import obc_state, emit_state, emit_flags
 
 log = logging.getLogger(__name__)
 
@@ -67,7 +71,7 @@ def _udp_loop(app: Flask) -> None:
 
 
 def _handle_packet(app: Flask, raw: bytes, addr: tuple) -> None:
-    """Parst ein Paket und schreibt es in InfluxDB."""
+    """Parst ein Paket, broadcastet es per Socket.IO und schreibt es in InfluxDB."""
     pkt = parse_packet(raw)
 
     if not pkt.valid:
@@ -83,13 +87,38 @@ def _handle_packet(app: Flask, raw: bytes, addr: tuple) -> None:
         hdr.sequence, measurement, phase, hdr.timestamp_ms, addr[0], addr[1],
     )
 
-    # Heartbeat nur loggen, nicht speichern
+    # State-Store füttern — meldet, ob Flags/Phase/Online sich geändert haben
+    state_changed = obc_state.note_packet(hdr)
+
+    # Heartbeat nur loggen und broadcasten, nicht speichern
     if hdr.pkt_type == TYPE_HEARTBEAT:
+        boot_count = pkt.fields.get("boot_count", -1)
         log.info(
             "HEARTBEAT von %s:%d | seq=%d boot_count=%d",
-            addr[0], addr[1], hdr.sequence, pkt.fields.get("boot_count", -1),
+            addr[0], addr[1], hdr.sequence, boot_count,
         )
+        obc_state.note_heartbeat(boot_count)
+        socketio.emit("obc:heartbeat", {
+            "seq":        hdr.sequence,
+            "boot_count": boot_count,
+        })
+        _emit_state_if_changed(state_changed)
         return
+
+    # Uptime aus SYSTEM-Paketen in den Snapshot übernehmen
+    if hdr.pkt_type == TYPE_SYSTEM and "uptime_s" in pkt.fields:
+        obc_state.note_uptime(pkt.fields["uptime_s"])
+
+    # ── Live-Broadcast an die Ground Station ────────────────────────────
+    # Vor dem InfluxDB-Write: eine langsame DB darf die GUI nicht ausbremsen.
+    # Die Meta-Felder entsprechen dem GS-Interface TelemetryMeta.
+    socketio.emit(f"telemetry:{measurement}", {
+        **pkt.fields,
+        "_seq":   hdr.sequence,
+        "_ts":    hdr.timestamp_ms,
+        "_phase": phase,
+    })
+    _emit_state_if_changed(state_changed)
 
     # Tags: Flugphase, Quelle-IP, Sequenznummer für Lücken-Erkennung
     tags = {
@@ -111,6 +140,19 @@ def _handle_packet(app: Flask, raw: bytes, addr: tuple) -> None:
             log.error(
                 "InfluxDB-Schreibfehler für Paket #%d: %s", hdr.sequence, exc
             )
+
+
+def _emit_state_if_changed(changed: bool) -> None:
+    """
+    Broadcastet Flags und Snapshot nur bei echter Änderung.
+
+    Bei voller Datenrate wäre ein obc:state pro Paket reine Bandbreiten-
+    verschwendung — Flags und Flugphase ändern sich nur selten.
+    """
+    if not changed:
+        return
+    emit_flags()
+    emit_state()
 
 
 # ── Öffentliche API ───────────────────────────────────────────────────────────

@@ -1,14 +1,14 @@
 from flask import Flask
 from flask_cors import CORS
 
-from app.extensions import db, migrate
+from app.extensions import db, migrate, socketio
 
 
 def create_app():
     """
     Flask App Factory.
 
-    Initialisiert alle Extensions (SQLAlchemy, Migrate, CORS),
+    Initialisiert alle Extensions (SQLAlchemy, Migrate, CORS, Socket.IO),
     registriert Blueprints und startet den UDP-Listener für OBC-Pakete.
     """
     app = Flask(__name__)
@@ -20,6 +20,11 @@ def create_app():
     CORS(app, resources={r"/api/*": {"origins": "*"}})
     db.init_app(app)
     migrate.init_app(app, db)
+    socketio.init_app(app)
+
+    # Socket.IO-Handler registrieren (Import genügt — Dekoratoren binden sich
+    # an die socketio-Instanz aus app.extensions)
+    from app import events  # noqa: F401  pylint: disable=unused-import
 
     # Blueprints registrieren
     from app.routes.health import health_bp
@@ -46,5 +51,9 @@ def create_app():
         # Serieller RXSM-Telecommand-Uplink (Motor-Steuerung → OBC)
         from app.services.tc_uplink import init_tc_uplink
         init_tc_uplink(app)
+
+        # Watchdog: markiert den OBC als offline, wenn Pakete ausbleiben
+        from app.services.obc_state import start_state_watchdog
+        start_state_watchdog()
 
     return app

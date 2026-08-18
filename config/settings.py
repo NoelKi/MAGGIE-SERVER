@@ -8,6 +8,13 @@ class Config:
     """Basis-Konfiguration."""
     SECRET_KEY = os.getenv("SECRET_KEY", "fallback-secret")
 
+    # Muss hier stehen, nicht erst als Argument beim Server-Start: create_app()
+    # entscheidet anhand von app.debug, ob es die Hintergrund-Listener startet.
+    # Ohne diesen Wert wäre app.debug zu diesem Zeitpunkt False und die Listener
+    # würden im Reloader-Parent UND im Child starten — der UDP-Bind auf :9000
+    # scheitert dann im zweiten Prozess ("Address already in use").
+    DEBUG = os.getenv("FLASK_DEBUG", "true").lower() not in ("0", "false", "no")
+
     # ── PostgreSQL ────────────────────────────────────────────────────
     POSTGRES_USER     = os.getenv("POSTGRES_USER", "maggie")
     POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "maggie_secret")

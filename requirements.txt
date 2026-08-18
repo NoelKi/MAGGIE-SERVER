@@ -1,5 +1,9 @@
 Flask==3.1.*
 flask-cors==5.*
+flask-socketio==5.*
+# WebSocket-Transport für den Werkzeug-Dev-Server (async_mode="threading").
+# Ohne dieses Paket fällt Socket.IO auf HTTP-Polling zurück.
+simple-websocket==1.*
 python-dotenv==1.*
 influxdb-client==1.*
 Flask-SQLAlchemy==3.*
