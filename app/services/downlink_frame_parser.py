@@ -23,8 +23,11 @@ Frame (20 Bytes, big-endian):
   19   END       1     Frame-End-Marker (DL_END = 0x7F)
 
 DATA-Layout:
-  IMU/ACCEL: [ax ay az 0 0]  (3× int16 BMI088-Counts)
-  IMU/GYRO : [gx gy gz 0 0]  (3× int16 BMI088-Counts)
+  IMU/ACCEL:   [ax ay az 0 0]  (3× int16 BMI088-Counts)
+  IMU/GYRO :   [gx gy gz 0 0]  (3× int16 BMI088-Counts)
+  MOTOR/STATE: [pos(int32) pwm(int16) state(uint8) 0]
+  SYS/STATE:   [state(uint8) subsys(uint8) uptime_ms(uint32) rexus(uint8) 0]
+  SYS/UPLINK:  [rx_bytes(uint16) frames_ok(uint16) frames_bad(uint16) opcode 0]
 
 Skalierung (Bodenstation):
   accel [m/s²] = count · 9.80665 / 10920   (±3 g)
@@ -52,6 +55,7 @@ DL_END   = 0x7F
 # MSGID1 – Subsystem
 SUBSYS_IMU   = 0x01
 SUBSYS_MOTOR = 0x02
+SUBSYS_SYS   = 0x03
 
 # MSGID2 – Nachrichtentyp (IMU-Subsystem)
 IMU_ACCEL = 0x01
@@ -60,17 +64,50 @@ IMU_GYRO  = 0x02
 # MSGID2 – Nachrichtentyp (MOTOR-Subsystem)
 MOTOR_STATE = 0x01
 
+# MSGID2 – Nachrichtentyp (SYS-Subsystem)
+SYS_STATE      = 0x01
+SYS_UPLINK     = 0x02
+SYS_UPLINK_RAW = 0x03
+
+# Die ersten acht Bytes, die ein fehlerfrei uebertragenes SDC-Telecommand
+# an der OBC-UART erzeugen muss: SYNC1 SYNC2 MSGID MCNT DEST/LEN START OPCODE ARGHI.
+# MCNT und DEST/LEN sind variabel und werden beim Vergleich uebersprungen.
+SDC_EXPECTED_HEAD = [0xEB, 0x90, 0xA5, None, None, 0x7E, None, 0x00]
+
 # STATUS1-Bits
 STATUS1_SYSTEM_HEALTHY = 0x01
 STATUS1_IMU_VALID      = 0x02
 
 # MOTOR-STATE-Bits (DATA[6], identisch zu telemetry_hal.hpp)
-MOTOR_STATE_ON        = 0x01
-MOTOR_STATE_MOVING    = 0x02
-MOTOR_STATE_AT_TARGET = 0x04
+MOTOR_STATE_ON          = 0x01
+MOTOR_STATE_MOVING      = 0x02
+MOTOR_STATE_AT_TARGET   = 0x04
+MOTOR_STATE_HDRM_OPEN   = 0x08
+MOTOR_STATE_HDRM_CLOSED = 0x10
+
+# SYS-STATE-Subsystembits (DATA[1], identisch zu telemetry_hal.hpp)
+# Bit 3 und 4 waren frueher Wiegesensor/Kraftsensor 2 und sind reserviert.
+SUBSYS_BIT_IMU      = 0x01
+SUBSYS_BIT_MOTOR    = 0x02
+SUBSYS_BIT_DOWNLINK = 0x04
+
+# Rohe REXUS-Leitungspegel (DATA[6], identisch zu DL_REXUS_* in rexus_hal.hpp)
+REXUS_BIT_L0   = 0x01
+REXUS_BIT_SOE  = 0x02
+REXUS_BIT_SODS = 0x04
+
+# MissionState-Werte (identisch zu MAGGIE_OBC/include/statemachine/mission_state.hpp)
+# 1..4 sind fuer die frühere Flugsequenz (ARMED/ASCENT/EXPERIMENT/SAFE)
+# reserviert und werden vom aktuellen OBC nicht gesendet.
+MISSION_STATES = {
+    0: "PRE_LAUNCH",
+    5: "ABORT",
+    6: "TEST",
+}
 
 # Motor-Positionsskalierung (identisch zur OBC-Firmware motor_hal.hpp)
-MOTOR_COUNTS_PER_REV = 4600.0    # Encoder-Counts pro voller Umdrehung
+MOTOR_COUNTS_PER_REV = 4600   # Encoder-Counts pro voller Umdrehung
+MOTOR_DEG_PER_COUNT  = 360.0 / MOTOR_COUNTS_PER_REV
 
 # Skalierungsfaktoren (identisch zur OBC-Firmware imu_hal.cpp)
 ACCEL_SCALE = 9.80665 / 10920.0    # int16-Count → m/s²
@@ -208,10 +245,33 @@ def _decode_motor(data: bytes) -> dict:
     return {
         "position":    position,
         "revolutions": round(position / MOTOR_COUNTS_PER_REV, 4),
+        "angle_deg":   round(position * MOTOR_DEG_PER_COUNT, 2),
         "pwm":         pwm,
         "on":          bool(state & MOTOR_STATE_ON),
         "moving":      bool(state & MOTOR_STATE_MOVING),
         "at_target":   bool(state & MOTOR_STATE_AT_TARGET),
+        "hdrm_open":   bool(state & MOTOR_STATE_HDRM_OPEN),
+        "hdrm_closed": bool(state & MOTOR_STATE_HDRM_CLOSED),
+    }
+
+
+def _decode_sys(data: bytes) -> dict:
+    # DATA: [state(uint8) subsys(uint8) uptime_ms(uint32 BE) rexus(uint8) spare]
+    state, subsys, uptime_ms = struct.unpack_from(">BBI", data)
+    rexus = data[6] if len(data) > 6 else 0
+    return {
+        "state":        state,
+        "state_name":   MISSION_STATES.get(state, f"UNKNOWN_{state}"),
+        "uptime_s":     round(uptime_ms / 1000.0, 1),
+        "imu_ok":       bool(subsys & SUBSYS_BIT_IMU),
+        "motor_ok":     bool(subsys & SUBSYS_BIT_MOTOR),
+        "downlink_ok":  bool(subsys & SUBSYS_BIT_DOWNLINK),
+        # Rohe REXUS-Leitungspegel (nicht entprellt), siehe DL_REXUS_* im OBC.
+        # Der OBC wertet sie derzeit nicht aus - sie dienen nur der Pruefung der
+        # Verkabelung am Bodenaufbau.
+        "rexus_l0":     bool(rexus & REXUS_BIT_L0),
+        "rexus_soe":    bool(rexus & REXUS_BIT_SOE),
+        "rexus_sods":   bool(rexus & REXUS_BIT_SODS),
     }
 
 
@@ -219,6 +279,50 @@ def _decode_motor(data: bytes) -> dict:
 register_message(SUBSYS_IMU, IMU_ACCEL, "imu", "accel", "imu", _decode_imu_accel)
 register_message(SUBSYS_IMU, IMU_GYRO,  "imu", "gyro",  "imu", _decode_imu_gyro)
 register_message(SUBSYS_MOTOR, MOTOR_STATE, "motor", "state", "motor", _decode_motor)
+def _decode_sys_uplink(data: bytes) -> dict:
+    # DATA: [rx_bytes(uint16 BE) frames_ok(uint16 BE) frames_bad(uint16 BE)
+    #        last_opcode(uint8) spare]
+    rx_bytes, frames_ok, frames_bad = struct.unpack_from(">HHH", data)
+    last_opcode = data[6] if len(data) > 6 else 0xFF
+    return {
+        # rx_bytes zaehlt JEDES Byte am RX-Pin, auch die RXSM-Huelle vor dem
+        # eigentlichen Command-Frame. Bleibt der Wert beim Senden eines
+        # Telecommands stehen, erreicht es die UART gar nicht erst.
+        "uplink_rx_bytes":    rx_bytes,
+        "uplink_frames_ok":   frames_ok,
+        "uplink_frames_bad":  frames_bad,
+        "uplink_last_opcode": None if last_opcode == 0xFF else last_opcode,
+    }
+
+
+def _decode_sys_uplink_raw(data: bytes) -> dict:
+    # DATA: die ersten 8 Bytes des letzten Uplink-Bursts, roh wie empfangen.
+    # Die gueltige Laenge steht in STATUS2 und ist hier nicht sichtbar - die
+    # Auswertung nimmt alle 8 Bytes und markiert Auffaelligkeiten.
+    raw = list(data[:8])
+
+    # Diagnose 1: passt der Kopf zum erwarteten SDC-Paket?
+    head_ok = all(exp is None or got == exp
+                  for got, exp in zip(raw, SDC_EXPECTED_HEAD))
+
+    # Diagnose 2: sind die Bytes bitweise invertiert? Klassisch bei einer
+    # RS-232-Strecke, deren Invertierung in einer Richtung nicht aufgehoben wird.
+    inverted = [b ^ 0xFF for b in raw]
+    inverted_ok = all(exp is None or got == exp
+                      for got, exp in zip(inverted, SDC_EXPECTED_HEAD))
+
+    return {
+        "uplink_raw_hex":       " ".join(f"{b:02X}" for b in raw),
+        "uplink_raw_head_ok":   head_ok,
+        "uplink_raw_inverted":  inverted_ok,
+        "uplink_raw_inv_hex":   " ".join(f"{b:02X}" for b in inverted),
+    }
+
+
+register_message(SUBSYS_SYS, SYS_STATE, "sys", "state", "obc", _decode_sys)
+register_message(SUBSYS_SYS, SYS_UPLINK, "sys", "uplink", "obc", _decode_sys_uplink)
+register_message(SUBSYS_SYS, SYS_UPLINK_RAW, "sys", "uplink_raw", "obc",
+                 _decode_sys_uplink_raw)
 
 # NEUEN WERT HINZUFÜGEN — Beispiel (später, wenn der OBC z.B. Wiegezellen sendet):
 #

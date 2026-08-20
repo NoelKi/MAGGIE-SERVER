@@ -17,6 +17,7 @@ REST-API-Backend der MAGGIE Ground Station. Empfängt Telemetrie vom Onboard Com
 - [API-Endpunkte](#api-endpunkte)
 - [OBC-UDP-Protokoll](#obc-udp-protokoll)
 - [RXSM-TC-Protokoll](#rxsm-tc-protokoll)
+- [Bodentest (TEST-State)](#bodentest-test-state)
 - [Projektstruktur](#projektstruktur)
 - [Entwicklung](#entwicklung)
 
@@ -317,6 +318,53 @@ Prüft ob InfluxDB erreichbar ist.
 
 ---
 
+### Telecommands
+
+Der Server verpackt jedes Kommando als 6-Byte-Frame in ein 24-Byte-RXSM-SDC-Paket
+und schreibt es auf `TC_SERIAL_PORT`. Vollständige Protokollreferenz:
+`MAGGIE_OBC/docs/TESTSTATE_PROTOKOLL.md`.
+
+#### `POST /api/command/test`
+Schaltet den OBC in den Bodentest-Zustand oder zurück.
+
+**Body:** `{ "action": "enter" | "exit", "dest": 0 }`
+
+`enter` akzeptiert der OBC nur aus `PRE_LAUNCH`. Nur im Zustand `TEST` führt er
+Motor- und HDRM-Kommandos aus.
+
+---
+
+#### `POST /api/command/motor`
+Steuert Motor und HDRM.
+
+**Body:** `{ "action": "on"|"off"|"half_turn"|"hdrm_open"|"hdrm_close"|"zero", "dest": 0 }`
+
+| Aktion | Wirkung |
+|---|---|
+| `on` / `off` | Motor dauerhaft ein/aus (offene Steuerung) |
+| `half_turn` | relative halbe Umdrehung ab aktueller Position |
+| `hdrm_open` | HDRM öffnen — absolute Fahrt auf +180° |
+| `hdrm_close` | HDRM schließen — absolute Fahrt auf die Nullposition |
+| `zero` | aktuelle Position als „HDRM geschlossen" setzen |
+
+**Response `201`:**
+```json
+{ "status": "ok", "action": "motor hdrm_open", "opcode": 3,
+  "mcnt": 4, "dest": 0, "sent_hex": "eb90a504067e030000bd7f…" }
+```
+
+---
+
+#### `POST /api/command/abort`
+Missionsabbruch: der OBC geht nach `ABORT` und stoppt alle Aktoren.
+
+---
+
+#### `GET /api/command/status`, `POST /api/command/connect|disconnect`
+Status bzw. Auswahl des seriellen TC-Ports zur Laufzeit.
+
+---
+
 ### System
 
 #### `GET /api/health`
@@ -408,6 +456,61 @@ Die SODS- und SOEX-Flags im MAGGIE-Paketheader werden vom OBC gesetzt, nachdem e
 
 ---
 
+## Bodentest (TEST-State)
+
+Aufbau für Integration und Review: Motor/HDRM aus der Ground Station steuern und
+IMU- sowie Motortelemetrie live sehen — über denselben Weg wie im Flug
+(GS → Server → RXSM Test Module → OBC).
+
+### Ports konfigurieren
+
+```bash
+# .env
+SERIAL_PORT=/dev/tty.usbserial-DOWNLINK     # RXSM -> Server (Telemetrie)
+TC_SERIAL_PORT=/dev/tty.usbserial-UPLINK    # Server -> RXSM (Telecommands)
+SERIAL_BAUD=38400
+TC_SERIAL_BAUD=38400
+```
+
+Beide Ports lassen sich auch zur Laufzeit setzen
+(`POST /api/downlink/connect`, `POST /api/command/connect`).
+
+### Ablauf
+
+```bash
+# 1. Test-Zustand betreten — erst danach nimmt der OBC Aktorbefehle an
+curl -X POST localhost:3000/api/command/test  -H 'Content-Type: application/json' -d '{"action":"enter"}'
+
+# 2. HDRM öffnen / schließen
+curl -X POST localhost:3000/api/command/motor -H 'Content-Type: application/json' -d '{"action":"hdrm_open"}'
+curl -X POST localhost:3000/api/command/motor -H 'Content-Type: application/json' -d '{"action":"hdrm_close"}'
+
+# 3. Zustand und Motorposition mitlesen
+curl "localhost:3000/api/downlink/frames?since=0" | python3 -m json.tool
+
+# 4. Test-Zustand verlassen — Aktoren sind wieder gesperrt
+curl -X POST localhost:3000/api/command/test  -H 'Content-Type: application/json' -d '{"action":"exit"}'
+```
+
+In der Ground Station läuft derselbe Ablauf über *Telecommands* (Zustand, HDRM,
+Motor) und *Telemetrie* (IMU-Verläufe, Motorposition).
+
+### Ohne Hardware proben
+
+`tools/rxsm_obc_simulator.py` spielt den OBC inklusive Zustandsmaschine und
+Motormodell nach:
+
+```bash
+python tools/rxsm_obc_simulator.py
+#   Downlink (Server liest):    SERIAL_PORT=/dev/ttys012
+#   Uplink   (Server schreibt): TC_SERIAL_PORT=/dev/ttys013
+```
+
+Die beiden ausgegebenen Ports in die `.env` eintragen, Server starten — Ground
+Station, Telecommands und Telemetrie verhalten sich wie am echten Aufbau.
+
+---
+
 ## Projektstruktur
 
 ```
@@ -440,14 +543,15 @@ MAGGIE_server/
 ├── requirements.txt              # Python-Abhängigkeiten
 ├── run.py                        # Einstiegspunkt, Banner, Port 3000
 └── tools/
-    └── obc_simulator.py          # REXUS-Flugsimulator — sendet UDP-Pakete
+    ├── obc_simulator.py          # REXUS-Flugsimulator — sendet UDP-Pakete
+    └── rxsm_obc_simulator.py     # OBC-Simulator für den seriellen RXSM-Pfad
 ```
 
 ---
 
 ## Entwicklung
 
-### OBC-Simulator
+### OBC-Simulator (UDP-Flugpfad)
 
 Simuliert einen vollständigen REXUS-Flug und sendet UDP-Pakete an den Server:
 
@@ -457,6 +561,16 @@ python tools/obc_simulator.py
 
 Der Simulator durchläuft automatisch alle Missionsphasen:
 `STARTUP → PREFLIGHT_CHECK → STANDBY → ASCENT → MICROGRAVITY → DESCENT → RECOVERY`
+
+### OBC-Simulator (serieller RXSM-Pfad)
+
+Spielt den OBC am seriellen Downlink/Uplink nach — inklusive Zustandsmaschine,
+HDRM-Motormodell und IMU-Telemetrie. Siehe
+[Bodentest (TEST-State)](#bodentest-test-state).
+
+```bash
+python tools/rxsm_obc_simulator.py
+```
 
 ### Linting
 

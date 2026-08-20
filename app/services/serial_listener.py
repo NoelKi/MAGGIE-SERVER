@@ -40,6 +40,7 @@ from app.services.downlink_frame_parser import (
     DecodedStore,
     DownlinkFrame,
 )
+from app.services.obc_state import obc_state, emit_state
 
 log = logging.getLogger(__name__)
 
@@ -266,6 +267,11 @@ class SerialDownlink:
     def _on_frame(self, frame: DownlinkFrame) -> None:
         """Ein decodiertes OBC-Frame: für die GUI merken + zum Batch-Write puffern."""
         self.decoded.add(frame)
+
+        # Jedes Frame hält den OBC online; SYS/STATE liefert den Missionszustand.
+        state_name = frame.fields.get("state_name") if frame.subsystem_name == "sys" else None
+        if obc_state.note_downlink(state_name):
+            emit_state()
 
         measurement = frame.measurement
         if not (measurement and frame.fields and self.app):

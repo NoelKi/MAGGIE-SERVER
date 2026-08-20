@@ -6,11 +6,15 @@ Hält den aktuellen OBC-Zustand im Speicher und liefert ihn als Snapshot,
 der 1:1 dem Interface `ObcSnapshot` der Ground Station entspricht
 (MAGGIE-GS/src/app/core/models/maggie.models.ts).
 
-Gefüttert wird der Store vom UDP-Paket-Listener: jedes gültige MAGGIE-Paket
-aktualisiert Sequenz, Zeitstempel, Flags und die abgeleitete Flugphase.
+Gefüttert wird der Store aus zwei Quellen:
+  * UDP-Paket-Listener — jedes gültige MAGGIE-Paket aktualisiert Sequenz,
+    Zeitstempel, Flags und die abgeleitete Flugphase (`note_packet`).
+  * serieller RXSM-Downlink — jedes decodierte 20-Byte-Frame hält den OBC
+    online, SYS/STATE-Frames liefern zusätzlich den Missionszustand
+    (`note_downlink`).
 
 WICHTIG — was das UDP-Protokoll NICHT liefert:
-  mission_state, operation_mode, arm, hrdm, light
+  operation_mode, arm, hrdm, light
 
 Diese Felder existieren im GS-Modell, haben im aktuellen 64-Byte-Paketformat
 (app/services/packet_parser.py) aber kein Gegenstück. Sie werden mit
@@ -19,8 +23,8 @@ sind über `update_subsystem()` setzbar, sobald das Protokoll sie mitführt.
 
 Online-Erkennung:
   online == True, solange innerhalb von OBC_ONLINE_TIMEOUT_S ein gültiges
-  Paket eintraf. Ein Watchdog-Thread kippt das Flag nach Ablauf auf False
-  und broadcastet den geänderten Snapshot.
+  Paket ODER Downlink-Frame eintraf. Ein Watchdog-Thread kippt das Flag nach
+  Ablauf auf False und broadcastet den geänderten Snapshot.
 """
 
 import time
@@ -80,8 +84,8 @@ class ObcState:
         self._last_rx_monotonic = 0.0
         self._online = False
 
-        # Nicht im UDP-Protokoll enthalten — siehe Modul-Docstring
-        self._mission_state  = "STARTUP"
+        # Missionszustand — kommt aus SYS/STATE-Frames des seriellen Downlinks
+        self._mission_state  = "UNKNOWN"
         self._operation_mode = "NONE"
         self._arm = {
             "joint1_position": 0.0, "joint2_position": 0.0,
@@ -138,6 +142,30 @@ class ObcState:
             self._flight_phase  = hdr.flight_phase
             self._last_sequence = hdr.sequence
             self._timestamp_ms  = hdr.timestamp_ms
+
+            self._last_rx_monotonic = time.monotonic()
+            self._online = True
+
+            return changed
+
+    def note_downlink(self, mission_state: str | None = None) -> bool:
+        """
+        Verbucht ein gültiges Frame des seriellen RXSM-Downlinks.
+
+        Args:
+            mission_state: Zustandsname aus einem SYS/STATE-Frame, sonst None.
+
+        Returns:
+            True, wenn sich am Snapshot etwas geändert hat, das die GUI sehen
+            muss (Online-Übergang oder Zustandswechsel) — nur dann lohnt ein
+            `obc:state`-Broadcast.
+        """
+        with self._lock:
+            changed = not self._online
+
+            if mission_state and mission_state != self._mission_state:
+                self._mission_state = mission_state
+                changed = True
 
             self._last_rx_monotonic = time.monotonic()
             self._online = True
