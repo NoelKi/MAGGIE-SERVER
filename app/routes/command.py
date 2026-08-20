@@ -7,7 +7,7 @@ Die Ground Station postet hierhin; der Server verpackt das Kommando als
 SDC-Nutzlast (rxsm_tc_parser.build_sdc_packet) und schreibt es auf den
 seriellen TC-Port (tc_uplink).
 
-  POST /api/command/motor        — HDRM-Motor steuern
+  POST /api/command/motor        — Motor drehen/stoppen (Open Loop)
   POST /api/command/test         — Bodentest-Zustand betreten/verlassen
   POST /api/command/abort        — Abbruch (Aktoren stoppen)
   GET  /api/command/status       — TC-Uplink-Verbindungsstatus
@@ -37,15 +37,25 @@ UL_START = 0x7E
 UL_END   = 0x7F
 
 # OPCODE (UplinkOpcode) — Aktoren, nur im TEST-Zustand ausgeführt
-# 0x02 (MOTOR_HALF_TURN) ist Altbestand und im OBC identisch zu half_turn_fwd;
-# er wird hier nicht mehr angeboten.
+# 0x02..0x04 (MOTOR_HALF_TURN / HALF_TURN_FWD / HALF_TURN_REV) sind stillgelegt:
+# Die Positionsregelung im OBC ist entfallen, der Encoder ist nur noch Sensor.
+# Werte nicht neu vergeben.
 MOTOR_OPCODES = {
-    "off":           0x00,   # Motor aus
-    "on":            0x01,   # Motor dauerhaft an
-    "half_turn_fwd": 0x03,   # halbe Umdrehung vorwärts (relativ +180°)
-    "half_turn_rev": 0x04,   # halbe Umdrehung rückwärts (relativ -180°)
-    "zero":          0x05,   # aktuelle Position = Nullpunkt
+    "off":  0x00,   # Motor aus
+    "on":   0x01,   # Motor drehen, ARG = Geschwindigkeit -255..+255
+    "zero": 0x05,   # Encoder-Zähler auf 0 setzen
+    "turn": 0x06,   # Drehung um ARG Grad, OBC stoppt am Encoder-Ziel
 }
+
+# Grenzen für 'speed' bei action="on" — entspricht dem PWM-Bereich der
+# MotorHAL (setSpeed clamped auf ±255). 0 heißt: OBC nimmt DEFAULT_ON_SPEED.
+MOTOR_SPEED_MIN = -255
+MOTOR_SPEED_MAX = 255
+
+# Grenzen für 'angle' bei action="turn". ±3600° = 10 Umdrehungen; alles darüber
+# ist am Tischaufbau eher ein Tippfehler als eine Absicht.
+MOTOR_ANGLE_MIN = -3600
+MOTOR_ANGLE_MAX = 3600
 
 # OPCODE (UplinkOpcode) — Zustandsmaschine, immer erlaubt
 TEST_OPCODES = {
@@ -87,14 +97,40 @@ def _read_dest(body: dict):
     return dest, None
 
 
-def _send(opcode: int, dest: int, label: str):
+def _read_ranged_int(body: dict, key: str, lo: int, hi: int, default: int = 0):
+    """
+    Liest einen optionalen ganzzahligen Parameter aus dem Request-Body.
+
+    Ein vertippter Wert soll auffallen und nicht still in den Bereich geklemmt
+    werden — deshalb 400 statt clamp.
+
+    Returns:
+        (wert, fehler_response) — fehler_response ist None, wenn alles passt.
+    """
+    if key not in body or body[key] is None:
+        return default, None
+    try:
+        value = int(body[key])
+    except (TypeError, ValueError):
+        return None, (jsonify({"error": f"'{key}' must be an integer"}), 400)
+    if not lo <= value <= hi:
+        return None, (jsonify({
+            "error": f"'{key}' must be in range {lo}..{hi}",
+        }), 400)
+    return value, None
+
+
+def _send(opcode: int, dest: int, label: str, arg: int = 0):
     """
     Sendet ein Telecommand und broadcastet das Ergebnis als 'command:ack'.
+
+    Args:
+        arg: 16-Bit-Argument im Command-Frame (bei MOTOR_ON die Geschwindigkeit).
 
     Returns:
         Flask-Response-Tupel — 201 bei Erfolg, 503 wenn der TC-Port zu ist.
     """
-    payload = _build_payload(opcode)
+    payload = _build_payload(opcode, arg)
 
     try:
         result = tc.send_sdc(dest, payload)
@@ -117,6 +153,7 @@ def _send(opcode: int, dest: int, label: str):
         "status":   "ok",
         "action":   label,
         "opcode":   opcode,
+        "arg":      arg,
         "mcnt":     result["mcnt"],
         "dest":     result["dest"],
         "sent_hex": result["sent_hex"],
@@ -126,11 +163,21 @@ def _send(opcode: int, dest: int, label: str):
 @command_bp.route("/command/motor", methods=["POST"])
 def motor():
     """
-    Steuert den HDRM-Motor.
+    Steuert den Motor.
 
     Body (JSON):
-      { "action": "on"|"off"|"half_turn_fwd"|"half_turn_rev"|"zero",
-        "dest": <0-7, optional> }
+      { "action": "on"|"off"|"zero"|"turn",
+        "speed":  <-255..255, optional, nur bei "on">,
+        "angle":  <-3600..3600, nur bei "turn">,
+        "dest":   <0-7, optional> }
+
+    'on' läuft ungeregelt, bis 'off' kommt. 'speed' ist der PWM-Stellwert; das
+    Vorzeichen gibt die Drehrichtung vor. Fehlt er (oder ist 0), nimmt der OBC
+    seine DEFAULT_ON_SPEED vorwärts.
+
+    'turn' dreht um 'angle' Grad und stoppt selbst, sobald der Encoder das Ziel
+    erreicht — mit fester Geschwindigkeit (TURN_SPEED), 'speed' gilt hier nicht.
+    Ohne angeschlossenen Encoder verwirft der OBC das Kommando.
 
     Der OBC führt diese Kommandos nur im TEST-Zustand aus ("off" immer).
     """
@@ -146,7 +193,22 @@ def motor():
     if err:
         return err
 
-    return _send(MOTOR_OPCODES[action], dest, f"motor {action}")
+    # ARG bedeutet je nach Aktion etwas anderes und bleibt sonst 0.
+    if action == "on":
+        arg, err = _read_ranged_int(body, "speed", MOTOR_SPEED_MIN, MOTOR_SPEED_MAX)
+        label = f"motor on (speed={arg})"
+    elif action == "turn":
+        arg, err = _read_ranged_int(body, "angle", MOTOR_ANGLE_MIN, MOTOR_ANGLE_MAX)
+        if not err and arg == 0:
+            return jsonify({"error": "'angle' ist bei action='turn' erforderlich"}), 400
+        label = f"motor turn ({arg} Grad)"
+    else:
+        arg, err, label = 0, None, f"motor {action}"
+
+    if err:
+        return err
+
+    return _send(MOTOR_OPCODES[action], dest, label, arg)
 
 
 @command_bp.route("/command/test", methods=["POST"])

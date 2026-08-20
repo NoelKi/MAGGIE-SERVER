@@ -79,11 +79,11 @@ STATUS1_SYSTEM_HEALTHY = 0x01
 STATUS1_IMU_VALID      = 0x02
 
 # MOTOR-STATE-Bits (DATA[6], identisch zu telemetry_hal.hpp)
-MOTOR_STATE_ON          = 0x01
-MOTOR_STATE_MOVING      = 0x02
-MOTOR_STATE_AT_TARGET   = 0x04
-MOTOR_STATE_HDRM_OPEN   = 0x08
-MOTOR_STATE_HDRM_CLOSED = 0x10
+# Bit 3 und 4 waren HDRM_OPEN / HDRM_CLOSED der frueheren Positionsregelung
+# und sind mit ihr entfallen. Bleiben reserviert.
+MOTOR_STATE_ON         = 0x01
+MOTOR_STATE_ENCODER_OK = 0x02
+MOTOR_STATE_TURNING    = 0x04
 
 # SYS-STATE-Subsystembits (DATA[1], identisch zu telemetry_hal.hpp)
 # Bit 3 und 4 waren frueher Wiegesensor/Kraftsensor 2 und sind reserviert.
@@ -105,7 +105,10 @@ MISSION_STATES = {
     6: "TEST",
 }
 
-# Motor-Positionsskalierung (identisch zur OBC-Firmware motor_hal.hpp)
+# Motor-Positionsskalierung (identisch zur OBC-Firmware motor_hal.hpp).
+# Am Aufbau bestaetigt; deckt sich mit 12 CPR x 380:1 Getriebe = 4560.
+# Muss mit MAGGIE_OBC/include/hal/motor_hal.hpp uebereinstimmen — dort haengt
+# ausserdem der Zielwert von MOTOR_TURN daran.
 MOTOR_COUNTS_PER_REV = 4600   # Encoder-Counts pro voller Umdrehung
 MOTOR_DEG_PER_COUNT  = 360.0 / MOTOR_COUNTS_PER_REV
 
@@ -243,15 +246,13 @@ def _decode_motor(data: bytes) -> dict:
     # 'pwm' = vorzeichenbehafteter PWM-Wert (-255..255).
     position, pwm, state, _spare = struct.unpack_from(">ihBB", data)
     return {
-        "position":    position,
+        "position":    position,   # rohe Encoder-Counts, der belastbare Wert
         "revolutions": round(position / MOTOR_COUNTS_PER_REV, 4),
         "angle_deg":   round(position * MOTOR_DEG_PER_COUNT, 2),
         "pwm":         pwm,
         "on":          bool(state & MOTOR_STATE_ON),
-        "moving":      bool(state & MOTOR_STATE_MOVING),
-        "at_target":   bool(state & MOTOR_STATE_AT_TARGET),
-        "hdrm_open":   bool(state & MOTOR_STATE_HDRM_OPEN),
-        "hdrm_closed": bool(state & MOTOR_STATE_HDRM_CLOSED),
+        "encoder_ok":  bool(state & MOTOR_STATE_ENCODER_OK),
+        "turning":     bool(state & MOTOR_STATE_TURNING),
     }
 
 

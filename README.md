@@ -330,28 +330,44 @@ Schaltet den OBC in den Bodentest-Zustand oder zurück.
 **Body:** `{ "action": "enter" | "exit", "dest": 0 }`
 
 `enter` akzeptiert der OBC nur aus `PRE_LAUNCH`. Nur im Zustand `TEST` führt er
-Motor- und HDRM-Kommandos aus.
+Motorkommandos aus — Ausnahme ist `off`, das als Sicherheitskommando immer gilt.
 
 ---
 
 #### `POST /api/command/motor`
-Steuert Motor und HDRM.
+Steuert den Motor.
 
-**Body:** `{ "action": "on"|"off"|"half_turn"|"hdrm_open"|"hdrm_close"|"zero", "dest": 0 }`
+**Body:** `{ "action": "on"|"off"|"zero"|"turn", "speed": 120, "angle": 180, "dest": 0 }`
 
 | Aktion | Wirkung |
 |---|---|
-| `on` / `off` | Motor dauerhaft ein/aus (offene Steuerung) |
-| `half_turn` | relative halbe Umdrehung ab aktueller Position |
-| `hdrm_open` | HDRM öffnen — absolute Fahrt auf +180° |
-| `hdrm_close` | HDRM schließen — absolute Fahrt auf die Nullposition |
-| `zero` | aktuelle Position als „HDRM geschlossen" setzen |
+| `on` | Motor dreht mit `speed` als PWM, bis `off` kommt |
+| `off` | Motor stoppen (in jedem Zustand erlaubt) |
+| `zero` | Encoder-Zähler auf 0 setzen, Motor stoppt dabei |
+| `turn` | Drehung um `angle` Grad, der OBC stoppt selbst am Encoder-Ziel |
+
+`speed` gilt nur bei `on`: PWM `-255..255`, das Vorzeichen gibt die Drehrichtung
+vor. Fehlt der Wert oder ist er `0`, nimmt der OBC seine `DEFAULT_ON_SPEED`
+(120, vorwärts).
+
+`angle` gilt nur bei `turn` und ist Pflicht: Grad `-3600..3600`, **relativ** zur
+aktuellen Position, Vorzeichen = Richtung. Die Geschwindigkeit setzt der OBC
+fest (`TURN_SPEED`), `speed` wirkt hier nicht. Ohne angeschlossenen Encoder
+verwirft der OBC das Kommando.
+
+Werte außerhalb der Bereiche werden mit `400` abgewiesen, statt still geklemmt
+zu werden.
 
 **Response `201`:**
 ```json
-{ "status": "ok", "action": "motor hdrm_open", "opcode": 3,
-  "mcnt": 4, "dest": 0, "sent_hex": "eb90a504067e030000bd7f…" }
+{ "status": "ok", "action": "motor on (speed=120)", "opcode": 1, "arg": 120,
+  "mcnt": 4, "dest": 0, "sent_hex": "eb90a504067e0100788c7f…" }
 ```
+
+Ein `on`-Dauerlauf stoppt nicht von selbst. Neben `off` beenden auch
+`test {"action":"exit"}` und `abort` die Fahrt; zusätzlich schaltet der OBC den
+Motor nach `MOTOR_ON_TIMEOUT_MS` (30 s) selbsttätig ab — das ist auch die
+Rückfallebene, falls bei `turn` der Encoder ausfällt.
 
 ---
 
@@ -458,9 +474,9 @@ Die SODS- und SOEX-Flags im MAGGIE-Paketheader werden vom OBC gesetzt, nachdem e
 
 ## Bodentest (TEST-State)
 
-Aufbau für Integration und Review: Motor/HDRM aus der Ground Station steuern und
-IMU- sowie Motortelemetrie live sehen — über denselben Weg wie im Flug
-(GS → Server → RXSM Test Module → OBC).
+Aufbau für Integration und Review: den Motor aus der Ground Station drehen und
+stoppen und dabei IMU- sowie Encoder-Telemetrie live sehen — über denselben Weg
+wie im Flug (GS → Server → RXSM Test Module → OBC).
 
 ### Ports konfigurieren
 
@@ -481,19 +497,27 @@ Beide Ports lassen sich auch zur Laufzeit setzen
 # 1. Test-Zustand betreten — erst danach nimmt der OBC Aktorbefehle an
 curl -X POST localhost:3000/api/command/test  -H 'Content-Type: application/json' -d '{"action":"enter"}'
 
-# 2. HDRM öffnen / schließen
-curl -X POST localhost:3000/api/command/motor -H 'Content-Type: application/json' -d '{"action":"hdrm_open"}'
-curl -X POST localhost:3000/api/command/motor -H 'Content-Type: application/json' -d '{"action":"hdrm_close"}'
+# 2. Encoder nullen, dann vorwärts drehen und wieder stoppen
+curl -X POST localhost:3000/api/command/motor -H 'Content-Type: application/json' -d '{"action":"zero"}'
+curl -X POST localhost:3000/api/command/motor -H 'Content-Type: application/json' -d '{"action":"on","speed":120}'
+curl -X POST localhost:3000/api/command/motor -H 'Content-Type: application/json' -d '{"action":"off"}'
 
-# 3. Zustand und Motorposition mitlesen
+# 3. Rückwärts (negatives Vorzeichen = andere Drehrichtung)
+curl -X POST localhost:3000/api/command/motor -H 'Content-Type: application/json' -d '{"action":"on","speed":-120}'
+
+# 3b. Halbe Umdrehung — der OBC stoppt selbst nach 2300 Counts
+curl -X POST localhost:3000/api/command/motor -H 'Content-Type: application/json' -d '{"action":"turn","angle":180}'
+
+# 4. Zustand und Encoder-Position mitlesen
 curl "localhost:3000/api/downlink/frames?since=0" | python3 -m json.tool
 
-# 4. Test-Zustand verlassen — Aktoren sind wieder gesperrt
+# 5. Test-Zustand verlassen — der Motor stoppt, Aktoren sind wieder gesperrt
 curl -X POST localhost:3000/api/command/test  -H 'Content-Type: application/json' -d '{"action":"exit"}'
 ```
 
-In der Ground Station läuft derselbe Ablauf über *Telecommands* (Zustand, HDRM,
-Motor) und *Telemetrie* (IMU-Verläufe, Motorposition).
+In der Ground Station läuft derselbe Ablauf über *Telecommands* (Zustand,
+PWM-Sollwert, Drehen/Stopp) und *Telemetrie* (IMU-Verläufe, Encoder-Counts,
+Winkel, PWM).
 
 ### Ohne Hardware proben
 
@@ -565,7 +589,8 @@ Der Simulator durchläuft automatisch alle Missionsphasen:
 ### OBC-Simulator (serieller RXSM-Pfad)
 
 Spielt den OBC am seriellen Downlink/Uplink nach — inklusive Zustandsmaschine,
-HDRM-Motormodell und IMU-Telemetrie. Siehe
+Open-Loop-Motormodell (die Encoder-Position läuft proportional zur PWM) und
+IMU-Telemetrie. Siehe
 [Bodentest (TEST-State)](#bodentest-test-state).
 
 ```bash

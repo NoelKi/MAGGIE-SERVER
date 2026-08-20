@@ -44,22 +44,25 @@ SUBSYS_IMU, SUBSYS_MOTOR, SUBSYS_SYS = 0x01, 0x02, 0x03
 IMU_ACCEL, IMU_GYRO, MOTOR_STATE, SYS_STATE = 0x01, 0x02, 0x01, 0x01
 
 STATUS1_SYSTEM_HEALTHY, STATUS1_IMU_VALID = 0x01, 0x02
-MOTOR_ON, MOTOR_MOVING, MOTOR_AT_TARGET = 0x01, 0x02, 0x04
-MOTOR_HDRM_OPEN, MOTOR_HDRM_CLOSED = 0x08, 0x10
+MOTOR_ON, MOTOR_ENCODER_OK, MOTOR_TURNING = 0x01, 0x02, 0x04
 SUBSYS_BITS_ALL = 0x01 | 0x02 | 0x04            # IMU + Motor + Downlink bereit
 
 # ── Uplink (uplink_hal.hpp) ─────────────────────────────────────────────────
 UL_START, UL_END = 0x7E, 0x7F
 UPLINK_FRAME_SIZE = 6
-OP_MOTOR_OFF, OP_MOTOR_ON, OP_HALF_TURN_LEGACY = 0x00, 0x01, 0x02
-OP_HALF_TURN_FWD, OP_HALF_TURN_REV, OP_MOTOR_ZERO = 0x03, 0x04, 0x05
+# 0x02..0x04 sind stillgelegt (Positionsregelung entfallen) und werden hier
+# bewusst nicht mehr behandelt — sie laufen in den Unbekannt-Zweig.
+OP_MOTOR_OFF, OP_MOTOR_ON, OP_MOTOR_ZERO, OP_MOTOR_TURN = 0x00, 0x01, 0x05, 0x06
 OP_TEST_ENTER, OP_TEST_EXIT, OP_ABORT = 0x10, 0x11, 0x1F
 
 # ── Motor (motor_hal.hpp) ───────────────────────────────────────────────────
 COUNTS_PER_REV = 4600
-HALF_TURN = COUNTS_PER_REV // 2
-HDRM_TOL = 60
-COUNTS_PER_S = 1500.0        # grobe Leerlaufdrehzahl des Prototyps
+DEFAULT_ON_SPEED = 120       # OBC-Default, wenn ARG 0 ist
+TURN_SPEED = 120             # feste Geschwindigkeit fuer MOTOR_TURN
+# Grobe Leerlaufdrehzahl des Prototyps bei voller PWM. Die simulierte Position
+# laeuft proportional zum PWM-Stellwert, damit sich in der Bodenstation auch
+# Richtung und Geschwindigkeit unterscheiden lassen.
+COUNTS_PER_S_AT_FULL = 1500.0 * 255.0 / 120.0
 
 # ── Zustände (mission_state.hpp) ────────────────────────────────────────────
 # 1..4 sind für die frühere Flugsequenz reserviert und werden nicht gesendet.
@@ -88,11 +91,12 @@ class ObcSimulator:
         self.counter = 0
         self.state = PRE_LAUNCH
 
-        # Motor: Encoder-Nullpunkt = "HDRM geschlossen"
+        # Motor (Open Loop): dreht mit self.pwm, bis MOTOR_OFF kommt oder eine
+        # MOTOR_TURN-Drehung ihr Encoder-Ziel erreicht.
         self.position = 0.0
-        self.target: float | None = None
         self.on = False
         self.pwm = 0
+        self.turn_target: float | None = None
 
         self._rx = bytearray()
 
@@ -108,8 +112,8 @@ class ObcSimulator:
         self.state = new
         if not self.actuators_unlocked:
             self.on = False
-            self.target = None
             self.pwm = 0
+            self.turn_target = None
 
     # -- Telecommands -------------------------------------------------------
     def feed_uplink(self, data: bytes) -> None:
@@ -146,7 +150,8 @@ class ObcSimulator:
             return
         if opcode == OP_MOTOR_OFF:
             # Sicherheitskommando: zustandsunabhängig erlaubt (wie im OBC).
-            self.on, self.target = False, None
+            self.on, self.pwm = False, 0
+            self.turn_target = None
             print("[OBC] TC MOTOR_OFF (zustandsunabhaengig)")
             return
 
@@ -156,35 +161,45 @@ class ObcSimulator:
             return
 
         if opcode == OP_MOTOR_ON:
-            self.on, self.target = True, None
-            print("[OBC] TC MOTOR_ON")
-        elif opcode in (OP_HALF_TURN_FWD, OP_HALF_TURN_LEGACY):
-            self.target = self.position + HALF_TURN
-            print(f"[OBC] TC HALF_TURN_FWD -> {self.target:.0f} cts")
-        elif opcode == OP_HALF_TURN_REV:
-            self.target = self.position - HALF_TURN
-            print(f"[OBC] TC HALF_TURN_REV -> {self.target:.0f} cts")
+            speed = arg if arg != 0 else DEFAULT_ON_SPEED
+            self.on, self.pwm = True, max(-255, min(255, speed))
+            self.turn_target = None
+            print(f"[OBC] TC MOTOR_ON (speed={self.pwm})")
         elif opcode == OP_MOTOR_ZERO:
-            self.position, self.target, self.on = 0.0, None, False
-            print("[OBC] TC MOTOR_ZERO — Nullpunkt gesetzt")
+            self.position, self.on, self.pwm = 0.0, False, 0
+            self.turn_target = None
+            print("[OBC] TC MOTOR_ZERO — Encoder-Zaehler auf 0")
+        elif opcode == OP_MOTOR_TURN:
+            delta = int(arg) * COUNTS_PER_REV // 360
+            if delta == 0:
+                print(f"[OBC] TC MOTOR_TURN ({arg} Grad) — zu klein, ignoriert")
+                return
+            self.on = True
+            self.pwm = TURN_SPEED if delta > 0 else -TURN_SPEED
+            self.turn_target = self.position + delta
+            print(f"[OBC] TC MOTOR_TURN ({arg} Grad = {delta} Counts) "
+                  f"-> Ziel {self.turn_target:.0f}")
         else:
             print(f"[OBC] Unbekanntes TC 0x{opcode:02X} (arg {arg}) ignoriert")
 
     # -- Motormodell --------------------------------------------------------
     def step(self, dt: float) -> None:
-        if self.target is not None:
-            error = self.target - self.position
-            if abs(error) <= 5:
-                self.position, self.target, self.pwm = self.target, None, 0
-            else:
-                step = min(abs(error), COUNTS_PER_S * dt)
-                self.position += math.copysign(step, error)
-                self.pwm = 60 if error > 0 else -60
-        elif self.on:
-            self.position += COUNTS_PER_S * dt
-            self.pwm = 120
-        else:
+        """Open Loop: die Position laeuft proportional zur PWM, sonst steht sie."""
+        if not (self.on and self.pwm):
             self.pwm = 0
+            return
+
+        self.position += COUNTS_PER_S_AT_FULL * (self.pwm / 255.0) * dt
+
+        # Endschalter wie updateTurn() im OBC: Vergleich in Fahrtrichtung.
+        if self.turn_target is not None:
+            reached = (self.position >= self.turn_target if self.pwm > 0
+                       else self.position <= self.turn_target)
+            if reached:
+                print(f"[OBC] Drehung beendet — Position {self.position:.0f} "
+                      f"(Ziel {self.turn_target:.0f})")
+                self.turn_target = None
+                self.on, self.pwm = False, 0
 
     # -- Downlink -----------------------------------------------------------
     def _frame(self, msgid1: int, msgid2: int, data: bytes, status1: int) -> bytes:
@@ -205,14 +220,12 @@ class ObcSimulator:
                 + self._frame(SUBSYS_IMU, IMU_GYRO, gyro + bytes(2), s1))
 
     def motor_frame(self) -> bytes:
-        state = MOTOR_ON if self.on else 0
-        state |= MOTOR_MOVING if self.target is not None else MOTOR_AT_TARGET
-        pos = int(round(self.position))
-        if abs(pos - HALF_TURN) <= HDRM_TOL:
-            state |= MOTOR_HDRM_OPEN
-        if abs(pos) <= HDRM_TOL:
-            state |= MOTOR_HDRM_CLOSED
-        data = struct.pack(">ihBB", pos, self.pwm, state, 0)
+        state = MOTOR_ENCODER_OK          # simulierter Encoder ist immer da
+        if self.on:
+            state |= MOTOR_ON
+        if self.turn_target is not None:
+            state |= MOTOR_TURNING
+        data = struct.pack(">ihBB", int(round(self.position)), self.pwm, state, 0)
         return self._frame(SUBSYS_MOTOR, MOTOR_STATE, data, STATUS1_SYSTEM_HEALTHY)
 
     def sys_frame(self) -> bytes:
