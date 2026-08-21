@@ -11,7 +11,7 @@ Bewusst getrennt vom read-only Downlink-Reader (serial_listener.py):
   - eigener serial.Serial-Handle + Lock für thread-sicheres Schreiben
 
 TC_SERIAL_PORT und SERIAL_PORT dürfen derselbe Adapter sein (im Bodenaufbau
-führt ein FTDI beide Richtungen von OBC Serial8) — dann liegen zwei Handles
+führt ein FTDI beide Richtungen von OBC Serial4) — dann liegen zwei Handles
 auf demselben Device-Node, was unter macOS/Linux zulässig ist. Wichtig dabei:
 wird der Adapter neu enumeriert, verliert der TX-Handle seinen Node still
 (macOS: "[Errno 6] Device not configured" beim Schreiben). send_sdc() öffnet

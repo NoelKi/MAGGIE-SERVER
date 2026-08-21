@@ -3,7 +3,7 @@
 MAGGIE – OBC-Simulator für den seriellen RXSM-Pfad
 ==================================================
 
-Spielt den OBC (Teensy 4.1, Serial8) auf der anderen Seite des RXSM nach:
+Spielt den OBC (Teensy 4.1, Serial4) auf der anderen Seite des RXSM nach:
 sendet den 20-Byte-Downlink (IMU, Motor, Systemzustand) und führt die
 6-Byte-Telecommands aus, die der Server über den TC-Port schickt.
 
@@ -40,13 +40,18 @@ import argparse
 
 # ── Downlink (telemetry_hal.hpp) ────────────────────────────────────────────
 DL_START, DL_END = 0x7E, 0x7F
-SUBSYS_IMU, SUBSYS_MOTOR, SUBSYS_SYS = 0x01, 0x02, 0x03
+SUBSYS_IMU, SUBSYS_MOTOR, SUBSYS_SYS, SUBSYS_FORCE = 0x01, 0x02, 0x03, 0x04
 IMU_ACCEL, IMU_GYRO, MOTOR_STATE, SYS_STATE = 0x01, 0x02, 0x01, 0x01
+FORCE_TARGET1, FORCE_TARGET2 = 0x01, 0x02
 
 STATUS1_SYSTEM_HEALTHY, STATUS1_IMU_VALID = 0x01, 0x02
 MOTOR_ON, MOTOR_ENCODER_OK, MOTOR_TURNING = 0x01, 0x02, 0x04
 MOTOR_TURN_FAILED = 0x08
-SUBSYS_BITS_ALL = 0x01 | 0x02 | 0x04            # IMU + Motor + Downlink bereit
+# Ein Saettigungsbit je Kanal, Flags stehen in STATUS2 (nicht in DATA).
+FORCE_SAT = (0x01, 0x02, 0x04, 0x08)
+FORCE_TARED, FORCE_STALE = 0x10, 0x20
+# IMU + Motor + Downlink + Kraftsensor 1 + Kraftsensor 2 bereit
+SUBSYS_BITS_ALL = 0x01 | 0x02 | 0x04 | 0x08 | 0x10
 
 # ── Uplink (uplink_hal.hpp) ─────────────────────────────────────────────────
 UL_START, UL_END = 0x7E, 0x7F
@@ -56,6 +61,7 @@ UPLINK_FRAME_SIZE = 6
 OP_MOTOR_OFF, OP_MOTOR_ON, OP_MOTOR_ZERO = 0x00, 0x01, 0x05
 OP_MOTOR_TURN, OP_MOTOR_GOTO = 0x06, 0x07
 OP_TEST_ENTER, OP_TEST_EXIT, OP_ABORT = 0x10, 0x11, 0x1F
+OP_FORCE_TARE = 0x20
 
 # ── Motor (motor_hal.hpp) ───────────────────────────────────────────────────
 COUNTS_PER_REV = 4550
@@ -81,6 +87,21 @@ STATE_NAMES = {PRE_LAUNCH: "PRE_LAUNCH", ABORT: "ABORT", TEST: "TEST"}
 
 TELEMETRY_HZ = 20
 SYS_HZ = 1
+# Der HX711 wandelt mit 10 Hz — der OBC sendet im Takt des Sensors, nicht im
+# Telemetrie-Intervall. Hier genauso, damit die Frame-Raten am Boden stimmen.
+FORCE_HZ = 10
+
+# ── Kraftsensoren (force_hal.hpp) ───────────────────────────────────────────
+# Elektrische Nullpunkte der Wandler im UNBELASTETEN Zustand, in der
+# Groessenordnung eines echten HX711 (zehntausende Counts). Sie sprengen das
+# int16 des Frames und sind der Grund, warum der OBC tarieren muss.
+FORCE1_ZERO = (120_000, -95_000, 210_000)           # X, Y, Z
+FORCE2_ZERO = (130_000, -80_000, 175_000, 96_000)   # A, B, C, D
+
+# Simulierte Querlast auf den drei 120-Grad-Zellen von Sensor 2.
+FORCE2_LOAD_COUNTS    = 6_000.0   # Betrag der umlaufenden Querlast
+FORCE2_PRELOAD_COUNTS = 2_500.0   # Gleichanteil, muss am Boden herausfallen
+FORCE2_SPIN_DEG_PER_S = 30.0      # Umlaufgeschwindigkeit der Lastrichtung
 
 
 def crc8(data: bytes) -> int:
@@ -113,6 +134,24 @@ class ObcSimulator:
 
         # None | "dead" | "inverted" — simulierter Encoder-Fehler, siehe step().
         self.encoder_fault: str | None = None
+
+        # Kraftsensoren: HX711-Rohsignale mit grossem Nullpunkt-Offset, wie ihn
+        # ein echter Wandler hat. Der Offset ist genau der Grund, warum der OBC
+        # tarieren MUSS, bevor die Werte ins int16 des Frames passen.
+        #
+        # Sensor 2 simuliert eine UMLAUFENDE Querlast auf den drei 120-Grad-
+        # Zellen plus eine langsame Z-Last auf der vierten. Damit laesst sich am
+        # Boden pruefen, ob die Clarke-Transformation richtig herum rechnet:
+        # force2_dir_deg muss gleichmaessig durchlaufen, |xy| konstant bleiben.
+        # Nullabgleich beim Start wie ForceHAL::init() im OBC — und zwar gegen
+        # den UNBELASTETEN Zustand, also die reinen elektrischen Offsets. Wuerde
+        # hier gegen den momentanen Messwert tariert, subtrahierte der Sensor
+        # eine echte Last und alle spaeteren Werte waeren dagegen gemessen.
+        # (Genau das passiert am Aufbau, wenn beim Booten etwas aufliegt.)
+        self.force1_offset = FORCE1_ZERO
+        self.force2_offset = FORCE2_ZERO
+        self.force1_tared = True
+        self.force2_tared = True
 
         # Nachlauf in Counts, den der Motor nach dem Abschalten noch macht.
         # Richtungsabhaengig, weil Federkraft, Schwerkraft und Reibung am HDRM
@@ -176,6 +215,17 @@ class ObcSimulator:
             self.on, self.pwm = False, 0
             self.turn_target = None
             print("[OBC] TC MOTOR_OFF (zustandsunabhaengig)")
+            return
+        if opcode == OP_FORCE_TARE:
+            # Kein Aktor -> zustandsunabhängig, wie im OBC.
+            # ARG: 0 = beide, 1 = Kraftsensor 1, 2 = Kraftsensor 2.
+            if arg not in (0, 1, 2):
+                print(f"[OBC] FORCE_TARE mit ungueltigem ARG {arg} - ignoriert")
+                return
+            self.tare_force(arg)
+            which = {0: "beide Kraftsensoren", 1: "Kraftsensor 1",
+                     2: "Kraftsensor 2"}[arg]
+            print(f"[OBC] TC FORCE_TARE - {which} genullt")
             return
 
         if not self.actuators_unlocked:
@@ -276,11 +326,12 @@ class ObcSimulator:
                 self.on, self.pwm = False, 0
 
     # -- Downlink -----------------------------------------------------------
-    def _frame(self, msgid1: int, msgid2: int, data: bytes, status1: int) -> bytes:
+    def _frame(self, msgid1: int, msgid2: int, data: bytes, status1: int,
+               status2: int = 0) -> bytes:
         self.counter = (self.counter + 1) & 0xFFFF
         t = int((time.time() - self.t0) * 1000) & 0xFFFF
         body = bytes([msgid1, msgid2, 0]) + struct.pack(">HH", self.counter, t) \
-            + data + bytes([status1, 0])
+            + data + bytes([status1, status2])
         return bytes([DL_START]) + body + bytes([crc8(body), DL_END])
 
     def imu_frames(self) -> bytes:
@@ -292,6 +343,80 @@ class ObcSimulator:
         s1 = STATUS1_SYSTEM_HEALTHY | STATUS1_IMU_VALID
         return (self._frame(SUBSYS_IMU, IMU_ACCEL, accel + bytes(2), s1)
                 + self._frame(SUBSYS_IMU, IMU_GYRO, gyro + bytes(2), s1))
+
+    def _force1_now(self) -> tuple[int, ...]:
+        """Rohe HX711-Counts von Sensor 1 (X/Y/Z) inkl. Nullpunkt-Offset."""
+        t = time.time() - self.t0
+        return tuple(
+            int(zero + amp * math.sin(t * f + p))
+            for zero, amp, f, p in zip(FORCE1_ZERO, (8_000, 6_000, 4_000),
+                                       (0.7, 0.5, 0.9), (0.0, 1.0, 2.5))
+        )
+
+    def _force2_now(self) -> tuple[int, ...]:
+        """
+        Rohe HX711-Counts von Sensor 2 (A/B/C/D) inkl. Nullpunkt-Offset.
+
+        Modelliert eine Querlast KONSTANTEN Betrags, die um die Achse wandert:
+        Jede der drei 120-Grad-Zellen misst die Projektion cos(phi - theta_i).
+        Dazu ein Gleichanteil (Montagevorspannung), der in der Bodenrechnung
+        herausfallen MUSS - genau das macht ihn zum nuetzlichen Testfall.
+
+        Am Boden muss dabei herauskommen: force2_xy_mag konstant,
+        force2_dir_deg gleichmaessig mit FORCE2_SPIN_DEG_PER_S umlaufend.
+        Stimmt der Winkel nicht, ist FORCE2_CELL_ANGLES_DEG im Parser falsch
+        oder die Zellen sind vertauscht verkabelt.
+        """
+        t = time.time() - self.t0
+        phi = t * FORCE2_SPIN_DEG_PER_S
+        radial = [
+            FORCE2_LOAD_COUNTS * math.cos(math.radians(phi - theta))
+            + FORCE2_PRELOAD_COUNTS
+            for theta in (0.0, 120.0, 240.0)
+        ]
+        z = 4_000.0 * math.sin(t * 0.4)      # langsame Z-Last auf Zelle D
+        return tuple(int(o + v) for o, v in zip(FORCE2_ZERO, radial + [z]))
+
+    def _force_frame(self, msgid2: int, raw: tuple[int, ...],
+                     offset: tuple[int, ...], tared: bool) -> bytes:
+        """
+        Ein FORCE-Frame bauen — tarierte Counts, saturiert auf int16.
+
+        Spiegelt ForceHAL + TelemetryDownlink::sendForce: Die Flags gehen in
+        STATUS2, nicht ins DATA-Feld (TARGET2 braucht alle acht Datenbytes).
+        """
+        flags = FORCE_TARED if tared else 0
+        values = []
+        for i, (r, o) in enumerate(zip(raw, offset)):
+            value = r - o
+            if value > 32767:
+                value = 32767
+                flags |= FORCE_SAT[i]
+            elif value < -32768:
+                value = -32768
+                flags |= FORCE_SAT[i]
+            values.append(value)
+
+        data = struct.pack(">" + "h" * len(values), *values)
+        data += bytes(8 - len(data))          # nicht belegte Kanaele bleiben 0
+        return self._frame(SUBSYS_FORCE, msgid2, data, STATUS1_SYSTEM_HEALTHY, flags)
+
+    def force1_frame(self) -> bytes:
+        return self._force_frame(FORCE_TARGET1, self._force1_now(),
+                                 self.force1_offset, self.force1_tared)
+
+    def force2_frame(self) -> bytes:
+        return self._force_frame(FORCE_TARGET2, self._force2_now(),
+                                 self.force2_offset, self.force2_tared)
+
+    def tare_force(self, sensor: int) -> None:
+        """sensor: 0 = beide, 1 = Kraftsensor 1, 2 = Kraftsensor 2."""
+        if sensor in (0, 1):
+            self.force1_offset = self._force1_now()
+            self.force1_tared = True
+        if sensor in (0, 2):
+            self.force2_offset = self._force2_now()
+            self.force2_tared = True
 
     def motor_frame(self) -> bytes:
         state = MOTOR_ENCODER_OK          # simulierter Encoder ist immer da
@@ -363,11 +488,12 @@ def main() -> int:
     print("MAGGIE OBC-Simulator")
     print("  Downlink (Server liest):   SERIAL_PORT=" + down.device)
     print("  Uplink   (Server schreibt): TC_SERIAL_PORT=" + up.device)
-    print(f"  Telemetrie {TELEMETRY_HZ} Hz, Zustand {SYS_HZ} Hz — Strg-C beendet\n")
+    print(f"  Telemetrie {TELEMETRY_HZ} Hz, Kraft {FORCE_HZ} Hz, "
+          f"Zustand {SYS_HZ} Hz — Strg-C beendet\n")
 
     obc = ObcSimulator()
     tick = 1.0 / TELEMETRY_HZ
-    next_tel = next_sys = time.time()
+    next_tel = next_sys = next_force = time.time()
     last = time.time()
     stop_at = time.time() + args.seconds if args.seconds else None
 
@@ -384,6 +510,10 @@ def main() -> int:
             if now >= next_tel:
                 next_tel += tick
                 down.write(obc.imu_frames() + obc.motor_frame())
+
+            if now >= next_force:
+                next_force += 1.0 / FORCE_HZ
+                down.write(obc.force1_frame() + obc.force2_frame())
 
             if now >= next_sys:
                 next_sys += 1.0 / SYS_HZ

@@ -8,6 +8,7 @@ SDC-Nutzlast (rxsm_tc_parser.build_sdc_packet) und schreibt es auf den
 seriellen TC-Port (tc_uplink).
 
   POST /api/command/motor        — Motor drehen/stoppen (Open Loop)
+  POST /api/command/force/tare   — Kraftsensor 1 und/oder 2 nullen
   POST /api/command/test         — Bodentest-Zustand betreten/verlassen
   POST /api/command/abort        — Abbruch (Aktoren stoppen)
   GET  /api/command/status       — TC-Uplink-Verbindungsstatus
@@ -75,6 +76,15 @@ TEST_OPCODES = {
 }
 
 OPCODE_ABORT = 0x1F
+
+# OPCODE (UplinkOpcode) — Sensoren (0x2x), zustandsunabhängig.
+# Tarieren bewegt keinen Aktor und liegt deshalb bewusst nicht hinter der
+# TEST-Sperre.
+OPCODE_FORCE_TARE = 0x20
+
+# ARG von FORCE_TARE: 0 = beide Kraftsensoren, 1 = Sensor 1, 2 = Sensor 2.
+FORCE_SENSOR_MIN = 0
+FORCE_SENSOR_MAX = 2
 
 # UART-Ziel-Adresse am RXSM (0-7), auf der der OBC lauscht. Ggf. an den
 # physischen Aufbau des Test Modules anpassen.
@@ -238,6 +248,39 @@ def motor():
         return err
 
     return _send(MOTOR_OPCODES[action], dest, label, arg)
+
+
+@command_bp.route("/command/force/tare", methods=["POST"])
+def force_tare():
+    """
+    Setzt den Nullpunkt der Kraftsensoren neu.
+
+    Body (JSON): { "sensor": 0|1|2, optional, "dest": <0-7, optional> }
+      sensor = 0 (Standard) → beide, 1 → Kraftsensor 1, 2 → Kraftsensor 2
+
+    Die Wiegezellen müssen dabei UNBELASTET sein — der gemessene Mittelwert
+    wird zum neuen Nullpunkt. Der OBC mittelt dafür über 8 Wandlungen (~0,8 s
+    je Sensor) und meldet den Erfolg über das Flag 'force_tared' bzw.
+    'force2_tared' im jeweiligen FORCE-Frame.
+
+    Bei Kraftsensor 2 wiegt das schwerer als bei Sensor 1: Aus dessen vier
+    Zellen rechnet der Server einen Kraftvektor. Ein unter Last gesetzter
+    Nullpunkt verschiebt nicht nur einen Kanal, sondern verdreht den Vektor.
+
+    Zustandsunabhängig: Tarieren bewegt keinen Aktor.
+    """
+    body = request.get_json(silent=True) or {}
+
+    dest, err = _read_dest(body)
+    if err:
+        return err
+
+    sensor, err = _read_ranged_int(body, "sensor", FORCE_SENSOR_MIN, FORCE_SENSOR_MAX)
+    if err:
+        return err
+
+    label = "force tare (beide)" if sensor == 0 else f"force tare (Sensor {sensor})"
+    return _send(OPCODE_FORCE_TARE, dest, label, sensor)
 
 
 @command_bp.route("/command/test", methods=["POST"])
