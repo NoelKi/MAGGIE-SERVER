@@ -44,13 +44,24 @@ MOTOR_OPCODES = {
     "off":  0x00,   # Motor aus
     "on":   0x01,   # Motor drehen, ARG = Geschwindigkeit -255..+255
     "zero": 0x05,   # Encoder-Zähler auf 0 setzen
-    "turn": 0x06,   # Drehung um ARG Grad, OBC stoppt am Encoder-Ziel
+    "turn": 0x06,   # Drehung um ARG Grad RELATIV, OBC stoppt am Encoder-Ziel
+    "goto": 0x07,   # Fahrt auf ARG Grad ABSOLUT (bezogen auf die Encoder-Null)
 }
+
+# Aktionen, die 'angle' brauchen und im ARG-Feld transportieren.
+MOTOR_ANGLE_ACTIONS = ("turn", "goto")
 
 # Grenzen für 'speed' bei action="on" — entspricht dem PWM-Bereich der
 # MotorHAL (setSpeed clamped auf ±255). 0 heißt: OBC nimmt DEFAULT_ON_SPEED.
 MOTOR_SPEED_MIN = -255
 MOTOR_SPEED_MAX = 255
+
+# Kleinster PWM-Betrag, mit dem der Motor anläuft (MotorHAL::MIN_DRIVE_SPEED).
+# Am Aufbau gemessen: unter ~150 dreht er selbst ohne Last nicht mehr, unter
+# Last liegt die Schwelle höher. Der OBC hebt kleinere Werte ohnehin an — hier
+# wird schon abgewiesen, damit ein zu kleiner Wert auffällt, statt still
+# verändert zu werden.
+MOTOR_MIN_DRIVE = 220
 
 # Grenzen für 'angle' bei action="turn". ±3600° = 10 Umdrehungen; alles darüber
 # ist am Tischaufbau eher ein Tippfehler als eine Absicht.
@@ -166,18 +177,23 @@ def motor():
     Steuert den Motor.
 
     Body (JSON):
-      { "action": "on"|"off"|"zero"|"turn",
+      { "action": "on"|"off"|"zero"|"turn"|"goto",
         "speed":  <-255..255, optional, nur bei "on">,
-        "angle":  <-3600..3600, nur bei "turn">,
+        "angle":  <-3600..3600, bei "turn" und "goto">,
         "dest":   <0-7, optional> }
 
     'on' läuft ungeregelt, bis 'off' kommt. 'speed' ist der PWM-Stellwert; das
     Vorzeichen gibt die Drehrichtung vor. Fehlt er (oder ist 0), nimmt der OBC
     seine DEFAULT_ON_SPEED vorwärts.
 
-    'turn' dreht um 'angle' Grad und stoppt selbst, sobald der Encoder das Ziel
-    erreicht — mit fester Geschwindigkeit (TURN_SPEED), 'speed' gilt hier nicht.
-    Ohne angeschlossenen Encoder verwirft der OBC das Kommando.
+    'turn' dreht um 'angle' Grad RELATIV zur aktuellen Position.
+    'goto' fährt auf 'angle' Grad ABSOLUT, bezogen auf die Encoder-Null. Für
+    wiederholtes Auf/Zu ist 'goto' die richtige Wahl: Bei 'turn' addiert sich
+    der Überschwinger jeder Fahrt auf und die Nullage wandert.
+
+    Beide stoppen selbst, sobald der Encoder das Ziel erreicht — mit fester
+    Geschwindigkeit (TURN_SPEED), 'speed' gilt dort nicht. Ohne angeschlossenen
+    Encoder verwirft der OBC die Kommandos.
 
     Der OBC führt diese Kommandos nur im TEST-Zustand aus ("off" immer).
     """
@@ -196,12 +212,25 @@ def motor():
     # ARG bedeutet je nach Aktion etwas anderes und bleibt sonst 0.
     if action == "on":
         arg, err = _read_ranged_int(body, "speed", MOTOR_SPEED_MIN, MOTOR_SPEED_MAX)
+        # 0 ist erlaubt und heißt "OBC nimmt seine DEFAULT_ON_SPEED".
+        if not err and arg != 0 and abs(arg) < MOTOR_MIN_DRIVE:
+            return jsonify({
+                "error": f"'speed' muss betragsmäßig mindestens {MOTOR_MIN_DRIVE} "
+                         f"sein (oder 0 für den Default) — darunter läuft der "
+                         f"Motor nicht an.",
+            }), 400
         label = f"motor on (speed={arg})"
-    elif action == "turn":
+    elif action in MOTOR_ANGLE_ACTIONS:
         arg, err = _read_ranged_int(body, "angle", MOTOR_ANGLE_MIN, MOTOR_ANGLE_MAX)
-        if not err and arg == 0:
+        # 'goto 0' ist gueltig (Fahrt auf die Nullage), 'turn 0' waere sinnlos.
+        if not err and arg == 0 and action == "turn":
             return jsonify({"error": "'angle' ist bei action='turn' erforderlich"}), 400
-        label = f"motor turn ({arg} Grad)"
+        if not err and "angle" not in body:
+            return jsonify({
+                "error": f"'angle' ist bei action='{action}' erforderlich",
+            }), 400
+        bezug = "absolut" if action == "goto" else "relativ"
+        label = f"motor {action} ({arg} Grad {bezug})"
     else:
         arg, err, label = 0, None, f"motor {action}"
 

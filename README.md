@@ -337,23 +337,34 @@ Motorkommandos aus — Ausnahme ist `off`, das als Sicherheitskommando immer gil
 #### `POST /api/command/motor`
 Steuert den Motor.
 
-**Body:** `{ "action": "on"|"off"|"zero"|"turn", "speed": 120, "angle": 180, "dest": 0 }`
+**Body:** `{ "action": "on"|"off"|"zero"|"turn"|"goto", "speed": 220, "angle": 180, "dest": 0 }`
 
 | Aktion | Wirkung |
 |---|---|
 | `on` | Motor dreht mit `speed` als PWM, bis `off` kommt |
 | `off` | Motor stoppen (in jedem Zustand erlaubt) |
 | `zero` | Encoder-Zähler auf 0 setzen, Motor stoppt dabei |
-| `turn` | Drehung um `angle` Grad, der OBC stoppt selbst am Encoder-Ziel |
+| `turn` | Drehung um `angle` Grad **relativ**, der OBC stoppt am Encoder-Ziel |
+| `goto` | Fahrt auf `angle` Grad **absolut** zur Encoder-Null |
 
-`speed` gilt nur bei `on`: PWM `-255..255`, das Vorzeichen gibt die Drehrichtung
-vor. Fehlt der Wert oder ist er `0`, nimmt der OBC seine `DEFAULT_ON_SPEED`
-(120, vorwärts).
+`speed` gilt nur bei `on`: das Vorzeichen gibt die Drehrichtung vor. Fehlt der
+Wert oder ist er `0`, nimmt der OBC seine `DEFAULT_ON_SPEED`.
 
-`angle` gilt nur bei `turn` und ist Pflicht: Grad `-3600..3600`, **relativ** zur
-aktuellen Position, Vorzeichen = Richtung. Die Geschwindigkeit setzt der OBC
-fest (`TURN_SPEED`), `speed` wirkt hier nicht. Ohne angeschlossenen Encoder
-verwirft der OBC das Kommando.
+**Der Betrag muss mindestens `MOTOR_MIN_DRIVE = 220` sein**, gültig ist also `0`
+oder `220..255`. Darunter läuft der Motor nicht an — am Aufbau gemessen: unter
+etwa 150 dreht er selbst ohne Last nicht mehr. Kleinere Beträge liefern `400`,
+statt still angehoben zu werden.
+
+`angle` ist bei `turn` und `goto` Pflicht: Grad `-3600..3600`. Die
+Geschwindigkeit setzt der OBC fest (`TURN_SPEED`), `speed` wirkt dort nicht.
+Ohne angeschlossenen Encoder verwirft der OBC beide Kommandos.
+
+**Für wiederholtes Auf/Zu `goto` nehmen, nicht `turn`.** Jede Fahrt endet ein
+Stück hinter dem Ziel, und dieser Nachlauf ist richtungsabhängig. Bei `turn`
+erbt jede Fahrt die Endlage der vorherigen, der Fehler addiert sich also auf und
+die Nullage wandert. Bei `goto` bezieht sich jedes Ziel auf denselben
+Nullpunkt, der Fehler bleibt beschränkt. `goto` fährt nicht, wenn die Position
+schon im Zielfenster (`POS_DEADBAND`) liegt.
 
 Werte außerhalb der Bereiche werden mit `400` abgewiesen, statt still geklemmt
 zu werden.
@@ -499,14 +510,18 @@ curl -X POST localhost:3000/api/command/test  -H 'Content-Type: application/json
 
 # 2. Encoder nullen, dann vorwärts drehen und wieder stoppen
 curl -X POST localhost:3000/api/command/motor -H 'Content-Type: application/json' -d '{"action":"zero"}'
-curl -X POST localhost:3000/api/command/motor -H 'Content-Type: application/json' -d '{"action":"on","speed":120}'
+curl -X POST localhost:3000/api/command/motor -H 'Content-Type: application/json' -d '{"action":"on","speed":220}'
 curl -X POST localhost:3000/api/command/motor -H 'Content-Type: application/json' -d '{"action":"off"}'
 
 # 3. Rückwärts (negatives Vorzeichen = andere Drehrichtung)
-curl -X POST localhost:3000/api/command/motor -H 'Content-Type: application/json' -d '{"action":"on","speed":-120}'
+curl -X POST localhost:3000/api/command/motor -H 'Content-Type: application/json' -d '{"action":"on","speed":-220}'
 
-# 3b. Halbe Umdrehung — der OBC stoppt selbst nach 2300 Counts
+# 3b. Halbe Umdrehung relativ — der OBC stoppt selbst am Encoder-Ziel
 curl -X POST localhost:3000/api/command/motor -H 'Content-Type: application/json' -d '{"action":"turn","angle":180}'
+
+# 3c. HDRM auf/zu über absolute Positionen (driftet auch über viele Zyklen nicht)
+curl -X POST localhost:3000/api/command/motor -H 'Content-Type: application/json' -d '{"action":"goto","angle":180}'
+curl -X POST localhost:3000/api/command/motor -H 'Content-Type: application/json' -d '{"action":"goto","angle":0}'
 
 # 4. Zustand und Encoder-Position mitlesen
 curl "localhost:3000/api/downlink/frames?since=0" | python3 -m json.tool

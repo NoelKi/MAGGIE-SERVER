@@ -45,6 +45,7 @@ IMU_ACCEL, IMU_GYRO, MOTOR_STATE, SYS_STATE = 0x01, 0x02, 0x01, 0x01
 
 STATUS1_SYSTEM_HEALTHY, STATUS1_IMU_VALID = 0x01, 0x02
 MOTOR_ON, MOTOR_ENCODER_OK, MOTOR_TURNING = 0x01, 0x02, 0x04
+MOTOR_TURN_FAILED = 0x08
 SUBSYS_BITS_ALL = 0x01 | 0x02 | 0x04            # IMU + Motor + Downlink bereit
 
 # ── Uplink (uplink_hal.hpp) ─────────────────────────────────────────────────
@@ -52,13 +53,22 @@ UL_START, UL_END = 0x7E, 0x7F
 UPLINK_FRAME_SIZE = 6
 # 0x02..0x04 sind stillgelegt (Positionsregelung entfallen) und werden hier
 # bewusst nicht mehr behandelt — sie laufen in den Unbekannt-Zweig.
-OP_MOTOR_OFF, OP_MOTOR_ON, OP_MOTOR_ZERO, OP_MOTOR_TURN = 0x00, 0x01, 0x05, 0x06
+OP_MOTOR_OFF, OP_MOTOR_ON, OP_MOTOR_ZERO = 0x00, 0x01, 0x05
+OP_MOTOR_TURN, OP_MOTOR_GOTO = 0x06, 0x07
 OP_TEST_ENTER, OP_TEST_EXIT, OP_ABORT = 0x10, 0x11, 0x1F
 
 # ── Motor (motor_hal.hpp) ───────────────────────────────────────────────────
-COUNTS_PER_REV = 4600
-DEFAULT_ON_SPEED = 120       # OBC-Default, wenn ARG 0 ist
-TURN_SPEED = 120             # feste Geschwindigkeit fuer MOTOR_TURN
+COUNTS_PER_REV = 4550
+DEFAULT_ON_SPEED = 220       # OBC-Default, wenn ARG 0 ist
+TURN_SPEED = 220             # feste Geschwindigkeit fuer MOTOR_TURN/GOTO
+MIN_DRIVE_SPEED = 220        # darunter laeuft der Motor nicht an
+
+# Abbruchkriterium einer Drehung (motor_hal.hpp: TURN_STALL_MS/TURN_MIN_COUNTS)
+TURN_STALL_S = 1.0
+TURN_MIN_COUNTS = 3
+
+# Zielfenster fuer MOTOR_GOTO (motor_hal.hpp: POS_DEADBAND)
+POS_DEADBAND = 200
 # Grobe Leerlaufdrehzahl des Prototyps bei voller PWM. Die simulierte Position
 # laeuft proportional zum PWM-Stellwert, damit sich in der Bodenstation auch
 # Richtung und Geschwindigkeit unterscheiden lassen.
@@ -97,6 +107,19 @@ class ObcSimulator:
         self.on = False
         self.pwm = 0
         self.turn_target: float | None = None
+        self.turn_ref_pos = 0.0
+        self.turn_ref_t = 0.0
+        self.turn_failed = False
+
+        # None | "dead" | "inverted" — simulierter Encoder-Fehler, siehe step().
+        self.encoder_fault: str | None = None
+
+        # Nachlauf in Counts, den der Motor nach dem Abschalten noch macht.
+        # Richtungsabhaengig, weil Federkraft, Schwerkraft und Reibung am HDRM
+        # in beiden Richtungen unterschiedlich wirken — genau diese Asymmetrie
+        # laesst die Nullage bei RELATIVEN Fahrten wandern.
+        self.overshoot_fwd = 0.0
+        self.overshoot_rev = 0.0
 
         self._rx = bytearray()
 
@@ -162,7 +185,13 @@ class ObcSimulator:
 
         if opcode == OP_MOTOR_ON:
             speed = arg if arg != 0 else DEFAULT_ON_SPEED
-            self.on, self.pwm = True, max(-255, min(255, speed))
+            speed = max(-255, min(255, speed))
+            # Anlaufgrenze wie MotorHAL::setSpeed()
+            if 0 < speed < MIN_DRIVE_SPEED:
+                speed = MIN_DRIVE_SPEED
+            elif -MIN_DRIVE_SPEED < speed < 0:
+                speed = -MIN_DRIVE_SPEED
+            self.on, self.pwm = True, speed
             self.turn_target = None
             print(f"[OBC] TC MOTOR_ON (speed={self.pwm})")
         elif opcode == OP_MOTOR_ZERO:
@@ -174,13 +203,27 @@ class ObcSimulator:
             if delta == 0:
                 print(f"[OBC] TC MOTOR_TURN ({arg} Grad) — zu klein, ignoriert")
                 return
-            self.on = True
-            self.pwm = TURN_SPEED if delta > 0 else -TURN_SPEED
-            self.turn_target = self.position + delta
-            print(f"[OBC] TC MOTOR_TURN ({arg} Grad = {delta} Counts) "
-                  f"-> Ziel {self.turn_target:.0f}")
+            print(f"[OBC] TC MOTOR_TURN ({arg} Grad relativ = {delta} Counts)")
+            self._start_move(self.position + delta)
+        elif opcode == OP_MOTOR_GOTO:
+            target = int(arg) * COUNTS_PER_REV // 360
+            if abs(target - self.position) <= POS_DEADBAND:
+                print(f"[OBC] TC MOTOR_GOTO ({arg} Grad) — Position "
+                      f"{self.position:.0f} schon im Zielfenster, keine Fahrt")
+                return
+            print(f"[OBC] TC MOTOR_GOTO ({arg} Grad absolut = {target} Counts)")
+            self._start_move(target)
         else:
             print(f"[OBC] Unbekanntes TC 0x{opcode:02X} (arg {arg}) ignoriert")
+
+    def _start_move(self, target: float) -> None:
+        self.on = True
+        self.pwm = TURN_SPEED if target > self.position else -TURN_SPEED
+        self.turn_target = target
+        self.turn_ref_pos = self.position
+        self.turn_ref_t = 0.0
+        self.turn_failed = False
+        print(f"[OBC]   Start {self.position:.0f} -> Ziel {target:.0f}")
 
     # -- Motormodell --------------------------------------------------------
     def step(self, dt: float) -> None:
@@ -189,16 +232,47 @@ class ObcSimulator:
             self.pwm = 0
             return
 
-        self.position += COUNTS_PER_S_AT_FULL * (self.pwm / 255.0) * dt
+        # encoder_fault stellt die beiden Ausfaelle nach, bei denen eine Drehung
+        # ihr Ziel nie erreicht: "dead" = Encoder zaehlt nicht, "inverted" =
+        # Kanaele A/B vertauscht, die Position laeuft vom Ziel weg.
+        rate = COUNTS_PER_S_AT_FULL * (self.pwm / 255.0)
+        if self.encoder_fault == "dead":
+            rate = 0.0
+        elif self.encoder_fault == "inverted":
+            rate = -rate
+        self.position += rate * dt
+
+        if self.turn_target is None:
+            return
 
         # Endschalter wie updateTurn() im OBC: Vergleich in Fahrtrichtung.
-        if self.turn_target is not None:
-            reached = (self.position >= self.turn_target if self.pwm > 0
-                       else self.position <= self.turn_target)
-            if reached:
-                print(f"[OBC] Drehung beendet — Position {self.position:.0f} "
-                      f"(Ziel {self.turn_target:.0f})")
+        reached = (self.position >= self.turn_target if self.pwm > 0
+                   else self.position <= self.turn_target)
+        if reached:
+            # Nachlauf: der Motor steht nicht schlagartig, sondern laeuft noch
+            # ein Stueck weiter (bzw. bremst kuerzer, wenn gebremst wird).
+            self.position += (self.overshoot_fwd if self.pwm > 0
+                              else -self.overshoot_rev)
+            print(f"[OBC] Fahrt beendet — Position {self.position:.0f} "
+                  f"(Ziel {self.turn_target:.0f})")
+            self.turn_target = None
+            self.on, self.pwm = False, 0
+            return
+
+        # Fortschrittsfenster wie TURN_STALL_MS/TURN_MIN_COUNTS im OBC.
+        progress = (self.position - self.turn_ref_pos if self.pwm > 0
+                    else self.turn_ref_pos - self.position)
+        if progress >= TURN_MIN_COUNTS:
+            self.turn_ref_pos = self.position
+            self.turn_ref_t = 0.0
+        else:
+            self.turn_ref_t += dt
+            if self.turn_ref_t >= TURN_STALL_S:
+                print(f"[OBC] Drehung abgebrochen — in {TURN_STALL_S:.0f} s nur "
+                      f"{progress:.0f} Counts in Fahrtrichtung "
+                      f"(Position {self.position:.0f}, Ziel {self.turn_target:.0f})")
                 self.turn_target = None
+                self.turn_failed = True
                 self.on, self.pwm = False, 0
 
     # -- Downlink -----------------------------------------------------------
@@ -225,6 +299,8 @@ class ObcSimulator:
             state |= MOTOR_ON
         if self.turn_target is not None:
             state |= MOTOR_TURNING
+        if self.turn_failed:
+            state |= MOTOR_TURN_FAILED
         data = struct.pack(">ihBB", int(round(self.position)), self.pwm, state, 0)
         return self._frame(SUBSYS_MOTOR, MOTOR_STATE, data, STATUS1_SYSTEM_HEALTHY)
 
