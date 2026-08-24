@@ -36,7 +36,7 @@ DATA-Layout:
 Skalierung (Bodenstation):
   accel [m/s²] = count · 9.80665 / 10920   (±3 g)
   gyro  [°/s]  = count · 1 / 65.536         (±500 °/s)
-  force [N]    = count · FORCE_TELE_DIV / counts_per_gram · 9.80665/1000
+  force [N]    = count · FORCE{1,2}_TELE_DIV / counts_per_gram · 9.80665/1000
 
 Kraftsensor 2 ist ein Eigenbau: Der OBC funkt nur die vier Rohzellen, den
 Kraftvektor rechnet erst dieser Parser (siehe FORCE2_CELL_ANGLES_DEG).
@@ -143,10 +143,17 @@ GYRO_SCALE  = 1.0 / 65.536         # int16-Count → °/s
 # ── Kraftsensoren (HX711) ──────────────────────────────────────────────────────
 #
 # Teiler, mit dem der OBC die tarierten 24-Bit-Counts ins int16 des Frames
-# bringt. MUSS mit FORCE_TELE_DIV in MAGGIE_OBC/include/hal/force_hal.hpp
-# uebereinstimmen — wird er dort erhoeht (weil Werte saturieren), gehoert er
-# hier mit.
-FORCE_TELE_DIV = 1
+# bringt — je Sensor eigener Wert, weil beide Wandlergruppen unterschiedlich
+# viele Rohcounts pro Gramm liefern. MUSS mit FORCE1_TELE_DIV / FORCE2_TELE_DIV
+# in MAGGIE_OBC/include/hal/force_hal.hpp uebereinstimmen — wird dort erhoeht
+# (weil Werte saturieren), gehoert der gleichnamige Wert hier mit.
+#
+# Bodentest 2026-08-24: Sensor 1 saettigte bei DIV=1 schon bei ca. 10 g
+# (Nennlast 20 N ≈ 2039 g) → DIV=256 gewaehlt (Vollausschlag ≈ 2560 g).
+# Sensor 2 (10 kg/Zelle) noch nicht einzeln gemessen — DIV=256 vorerst als
+# Schaetzung uebernommen (siehe Herleitung in force_hal.hpp).
+FORCE1_TELE_DIV = 256
+FORCE2_TELE_DIV = 256
 
 # Umrechnung Gramm → Newton.
 _G_TO_N = 9.80665 / 1000.0
@@ -351,7 +358,7 @@ def _decode_motor(data: bytes, status2: int) -> dict:
 
 
 def _force_channels(data: bytes, status2: int, count: int,
-                    counts_per_gram: tuple) -> tuple[list[int], list[float], dict]:
+                    counts_per_gram: tuple, tele_div: int) -> tuple[list[int], list[float], dict]:
     """
     Gemeinsame Vorarbeit beider FORCE-Typen.
 
@@ -360,7 +367,7 @@ def _force_channels(data: bytes, status2: int, count: int,
     """
     raw = struct.unpack_from(">" + "h" * count, data)
 
-    counts = [v * FORCE_TELE_DIV for v in raw]
+    counts = [v * tele_div for v in raw]
     newton = [c / counts_per_gram[i] * _G_TO_N for i, c in enumerate(counts)]
 
     flags = {
@@ -376,7 +383,7 @@ def _force_channels(data: bytes, status2: int, count: int,
 
 def _decode_force(data: bytes, status2: int) -> dict:
     """FORCE/TARGET1 — drei Zellen X/Y/Z, keine Verrechnung noetig."""
-    counts, newton, flags = _force_channels(data, status2, 3, FORCE1_COUNTS_PER_GRAM)
+    counts, newton, flags = _force_channels(data, status2, 3, FORCE1_COUNTS_PER_GRAM, FORCE1_TELE_DIV)
     axes = ("x", "y", "z")
 
     out = {}
@@ -387,7 +394,7 @@ def _decode_force(data: bytes, status2: int) -> dict:
         out[f"force_{axis}"] = round(newton[i], 4)
         # Saturiert = der Wert lag ausserhalb des int16 und ist abgeschnitten.
         # In der Kurve sieht das aus wie ein Plateau, ist aber keins —
-        # Gegenmittel: FORCE_TELE_DIV im OBC UND hier erhoehen.
+        # Gegenmittel: FORCE1_TELE_DIV im OBC UND hier erhoehen.
         out[f"force_sat_{axis}"] = bool(status2 & FORCE_FLAG_SAT[i])
 
     out["force_tared"] = flags["tared"]
@@ -403,7 +410,7 @@ def _decode_force2(data: bytes, status2: int) -> dict:
     Kraftvektor entsteht ERST HIER (Clarke-Transformation, siehe
     FORCE2_CELL_ANGLES_DEG) — der OBC funkt bewusst nur die Rohkanaele.
     """
-    counts, newton, flags = _force_channels(data, status2, 4, FORCE2_COUNTS_PER_GRAM)
+    counts, newton, flags = _force_channels(data, status2, 4, FORCE2_COUNTS_PER_GRAM, FORCE2_TELE_DIV)
     cells = ("a", "b", "c", "d")
 
     out = {}
