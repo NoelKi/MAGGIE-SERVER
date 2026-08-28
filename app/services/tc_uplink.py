@@ -30,6 +30,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 from typing import Optional
 
 try:
@@ -190,6 +191,40 @@ class TcUplink:
 tc = TcUplink()
 
 
+# Boot-Race: Startet der Server, bevor udev den USB-Adapter-Symlink
+# (/dev/serial/by-id/...) angelegt hat, scheitert der erste Connect-Versuch
+# mit "No such file or directory" - obwohl das Geraet Sekunden spaeter da ist.
+# Der Downlink-Reader (serial_listener.py) faengt das mit einem eigenen
+# Reconnect-Thread ab; dieselbe Race betrifft den TC-Uplink genauso.
+_AUTOSTART_RETRY_INTERVAL_S = 2.0
+_AUTOSTART_RETRY_MAX_TRIES  = 30   # ~60s Kulanzfenster, dann eher ein echter Fehler
+
+
+def _autostart_retry_loop(port: str, baud: int) -> None:
+    """
+    Versucht im Hintergrund erneut zu verbinden, bis es klappt oder das
+    Kulanzfenster ablaeuft.
+
+    Bewusst NUR fuer den Boot-Race gedacht: Bricht endgueltig ab, sobald der
+    TC-Uplink laeuft (egal ob durch diesen Loop oder durch einen manuellen
+    POST /api/command/connect) - ein spaeteres manuelles disconnect() soll
+    NICHT automatisch wieder verbunden werden.
+    """
+    for _ in range(_AUTOSTART_RETRY_MAX_TRIES):
+        time.sleep(_AUTOSTART_RETRY_INTERVAL_S)
+        if tc.is_running():
+            return   # zwischenzeitlich manuell verbunden - nichts mehr zu tun
+        try:
+            tc.start(port, baud)
+            log.info("TC-Uplink-Autostart nach Retry verbunden: %s @ %d Baud", port, baud)
+            return
+        except RuntimeError:
+            continue
+    log.warning("TC-Uplink-Autostart auch nach %d Versuchen fehlgeschlagen (%s) - "
+                "manuell per POST /api/command/connect verbinden.",
+                _AUTOSTART_RETRY_MAX_TRIES, port)
+
+
 def init_tc_uplink(app) -> None:
     """
     Initialisiert den TC-Uplink aus der App-Config und verbindet ggf. automatisch.
@@ -208,7 +243,13 @@ def init_tc_uplink(app) -> None:
         try:
             tc.start(port, baud)
         except RuntimeError as exc:
-            log.warning("TC-Uplink-Autostart fehlgeschlagen: %s", exc)
+            log.warning("TC-Uplink-Autostart fehlgeschlagen (%s) - "
+                        "Retry im Hintergrund fuer bis zu %ds.",
+                        exc, int(_AUTOSTART_RETRY_INTERVAL_S * _AUTOSTART_RETRY_MAX_TRIES))
+            threading.Thread(
+                target=_autostart_retry_loop, args=(port, baud),
+                name="tc-uplink-autostart-retry", daemon=True,
+            ).start()
     else:
         log.info("TC-Uplink im Standby (kein Port konfiguriert — "
                  "Port zur Laufzeit über /api/command/connect wählen)")

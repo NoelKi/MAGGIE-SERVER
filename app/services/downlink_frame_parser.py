@@ -72,7 +72,8 @@ IMU_ACCEL = 0x01
 IMU_GYRO  = 0x02
 
 # MSGID2 – Nachrichtentyp (MOTOR-Subsystem)
-MOTOR_STATE = 0x01
+MOTOR_STATE  = 0x01   # Motor 1
+MOTOR_STATE2 = 0x02   # Motor 2 (baugleich zu Motor 1)
 
 # MSGID2 – Nachrichtentyp (FORCE-Subsystem)
 FORCE_TARGET1 = 0x01   # 3 Zellen X/Y/Z
@@ -114,11 +115,20 @@ SUBSYS_BIT_MOTOR    = 0x02
 SUBSYS_BIT_DOWNLINK = 0x04
 SUBSYS_BIT_FORCE1   = 0x08
 SUBSYS_BIT_FORCE2   = 0x10
+SUBSYS_BIT_MOTOR2   = 0x20
 
 # Rohe REXUS-Leitungspegel (DATA[6], identisch zu DL_REXUS_* in rexus_hal.hpp)
 REXUS_BIT_L0   = 0x01
 REXUS_BIT_SOE  = 0x02
 REXUS_BIT_SODS = 0x04
+
+# Aktiv-Pegel der REXUS-Startsignale — identisch zu REXUS_ACTIVE_HIGH in
+# MAGGIE_OBC/include/pin_config.hpp. Die rexus_l0/soe/sods-Bits oben sind der
+# ROHE elektrische Pegel (bewusst so gewaehlt, siehe REXUSHAL::rawBits()) —
+# bei aktiv-LOW-Verdrahtung bedeutet raw=true also "Leitung ruht", nicht
+# "Signal ausgeloest". Fuer eine Anzeige "aktiv/inaktiv" muss das umgedreht
+# werden (siehe _decode_sys unten, l0_active/soe_active/sods_active).
+REXUS_ACTIVE_HIGH = False
 
 # MissionState-Werte (identisch zu MAGGIE_OBC/include/statemachine/mission_state.hpp)
 # 1..4 sind fuer die frühere Flugsequenz (ARMED/ASCENT/EXPERIMENT/SAFE)
@@ -341,20 +351,38 @@ def _decode_imu_gyro(data: bytes, status2: int) -> dict:
     }
 
 
-def _decode_motor(data: bytes, status2: int) -> dict:
+def _motor_fields(data: bytes, status2: int, prefix: str) -> dict:
+    """Gemeinsame Vorarbeit für Motor 1 und Motor 2 — siehe _decode_motor(2)."""
     # DATA: [pos(int32 BE) pwm(int16 BE) state(uint8) spare]
     # 'pwm' = vorzeichenbehafteter PWM-Wert (-255..255).
     position, pwm, state, _spare = struct.unpack_from(">ihBB", data)
     return {
-        "position":    position,   # rohe Encoder-Counts, der belastbare Wert
-        "revolutions": round(position / MOTOR_COUNTS_PER_REV, 4),
-        "angle_deg":   round(position * MOTOR_DEG_PER_COUNT, 2),
-        "pwm":         pwm,
-        "on":          bool(state & MOTOR_STATE_ON),
-        "encoder_ok":  bool(state & MOTOR_STATE_ENCODER_OK),
-        "turning":     bool(state & MOTOR_STATE_TURNING),
-        "turn_failed": bool(state & MOTOR_STATE_TURN_FAILED),
+        f"{prefix}position":    position,   # rohe Encoder-Counts, der belastbare Wert
+        f"{prefix}revolutions": round(position / MOTOR_COUNTS_PER_REV, 4),
+        f"{prefix}angle_deg":   round(position * MOTOR_DEG_PER_COUNT, 2),
+        f"{prefix}pwm":         pwm,
+        f"{prefix}on":          bool(state & MOTOR_STATE_ON),
+        f"{prefix}encoder_ok":  bool(state & MOTOR_STATE_ENCODER_OK),
+        f"{prefix}turning":     bool(state & MOTOR_STATE_TURNING),
+        f"{prefix}turn_failed": bool(state & MOTOR_STATE_TURN_FAILED),
     }
+
+
+def _decode_motor(data: bytes, status2: int) -> dict:
+    """MOTOR/STATE — Motor 1."""
+    return _motor_fields(data, status2, "")
+
+
+def _decode_motor2(data: bytes, status2: int) -> dict:
+    """
+    MOTOR/STATE2 — Motor 2, baugleich zu Motor 1.
+
+    Eigenes Measurement ("motor2") und mit "motor2_" prefixte Feldnamen, damit
+    beide Motoren gleichzeitig in denselben Live-Werten (GUI) auftauchen
+    können, ohne sich gegenseitig zu überschreiben — analog zu Kraftsensor 2
+    ("force2_*").
+    """
+    return _motor_fields(data, status2, "motor2_")
 
 
 def _force_channels(data: bytes, status2: int, count: int,
@@ -448,6 +476,15 @@ def _decode_sys(data: bytes, status2: int) -> dict:
     # DATA: [state(uint8) subsys(uint8) uptime_ms(uint32 BE) rexus(uint8) spare]
     state, subsys, uptime_ms = struct.unpack_from(">BBI", data)
     rexus = data[6] if len(data) > 6 else 0
+
+    raw_l0   = bool(rexus & REXUS_BIT_L0)
+    raw_soe  = bool(rexus & REXUS_BIT_SOE)
+    raw_sods = bool(rexus & REXUS_BIT_SODS)
+
+    # asserted = Signal liegt WIRKLICH an, unabhaengig vom Leitungspegel.
+    def _asserted(raw: bool) -> bool:
+        return raw if REXUS_ACTIVE_HIGH else not raw
+
     return {
         "state":        state,
         "state_name":   MISSION_STATES.get(state, f"UNKNOWN_{state}"),
@@ -457,19 +494,27 @@ def _decode_sys(data: bytes, status2: int) -> dict:
         "downlink_ok":  bool(subsys & SUBSYS_BIT_DOWNLINK),
         "force1_ok":    bool(subsys & SUBSYS_BIT_FORCE1),
         "force2_ok":    bool(subsys & SUBSYS_BIT_FORCE2),
+        "motor2_ok":    bool(subsys & SUBSYS_BIT_MOTOR2),
         # Rohe REXUS-Leitungspegel (nicht entprellt), siehe DL_REXUS_* im OBC.
         # Der OBC wertet sie derzeit nicht aus - sie dienen nur der Pruefung der
         # Verkabelung am Bodenaufbau.
-        "rexus_l0":     bool(rexus & REXUS_BIT_L0),
-        "rexus_soe":    bool(rexus & REXUS_BIT_SOE),
-        "rexus_sods":   bool(rexus & REXUS_BIT_SODS),
+        "rexus_l0":     raw_l0,
+        "rexus_soe":    raw_soe,
+        "rexus_sods":   raw_sods,
+        # Interpretierte Startsignale fuer die GUI-Anzeige "aktiv/inaktiv" —
+        # bereits um REXUS_ACTIVE_HIGH korrigiert (siehe oben).
+        # L0 = Lift-Off, SOE = Start Of Experiment, SODS = Start Of Data Storage.
+        "l0_active":    _asserted(raw_l0),
+        "soe_active":   _asserted(raw_soe),
+        "sods_active":  _asserted(raw_sods),
     }
 
 
 # ── Registrierte Nachrichtentypen ─────────────────────────────────────────────────
 register_message(SUBSYS_IMU, IMU_ACCEL, "imu", "accel", "imu", _decode_imu_accel)
 register_message(SUBSYS_IMU, IMU_GYRO,  "imu", "gyro",  "imu", _decode_imu_gyro)
-register_message(SUBSYS_MOTOR, MOTOR_STATE, "motor", "state", "motor", _decode_motor)
+register_message(SUBSYS_MOTOR, MOTOR_STATE,  "motor", "state",  "motor",  _decode_motor)
+register_message(SUBSYS_MOTOR, MOTOR_STATE2, "motor", "state2", "motor2", _decode_motor2)
 register_message(SUBSYS_FORCE, FORCE_TARGET1, "force", "target1", "force", _decode_force)
 register_message(SUBSYS_FORCE, FORCE_TARGET2, "force", "target2", "force2", _decode_force2)
 def _decode_sys_uplink(data: bytes, status2: int) -> dict:
