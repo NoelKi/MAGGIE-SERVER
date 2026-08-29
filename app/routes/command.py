@@ -7,7 +7,7 @@ Die Ground Station postet hierhin; der Server verpackt das Kommando als
 SDC-Nutzlast (rxsm_tc_parser.build_sdc_packet) und schreibt es auf den
 seriellen TC-Port (tc_uplink).
 
-  POST /api/command/motor        — Motor drehen/stoppen (Open Loop)
+  POST /api/command/motor        — Motor 1 oder 2 drehen/stoppen (Open Loop)
   POST /api/command/force/tare   — Kraftsensor 1 und/oder 2 nullen
   POST /api/command/test         — Bodentest-Zustand betreten/verlassen
   POST /api/command/abort        — Abbruch (Aktoren stoppen)
@@ -41,13 +41,26 @@ UL_END   = 0x7F
 # 0x02..0x04 (MOTOR_HALF_TURN / HALF_TURN_FWD / HALF_TURN_REV) sind stillgelegt:
 # Die Positionsregelung im OBC ist entfallen, der Encoder ist nur noch Sensor.
 # Werte nicht neu vergeben.
-MOTOR_OPCODES = {
+MOTOR1_OPCODES = {
     "off":  0x00,   # Motor aus
     "on":   0x01,   # Motor drehen, ARG = Geschwindigkeit -255..+255
     "zero": 0x05,   # Encoder-Zähler auf 0 setzen
     "turn": 0x06,   # Drehung um ARG Grad RELATIV, OBC stoppt am Encoder-Ziel
     "goto": 0x07,   # Fahrt auf ARG Grad ABSOLUT (bezogen auf die Encoder-Null)
 }
+
+# Motor 2 — baugleich zu Motor 1, eigene Opcodes (siehe uplink_hal.hpp:
+# MOTOR2_OFF..MOTOR2_GOTO). ARG-Bedeutung je Aktion identisch zu Motor 1.
+MOTOR2_OPCODES = {
+    "off":  0x08,
+    "on":   0x09,
+    "zero": 0x0A,
+    "turn": 0x0B,
+    "goto": 0x0C,
+}
+
+# Motor-Auswahl für POST /api/command/motor — welches Opcode-Set gilt.
+MOTOR_OPCODES_BY_UNIT = {1: MOTOR1_OPCODES, 2: MOTOR2_OPCODES}
 
 # Aktionen, die 'angle' brauchen und im ARG-Feld transportieren.
 MOTOR_ANGLE_ACTIONS = ("turn", "goto")
@@ -57,11 +70,10 @@ MOTOR_ANGLE_ACTIONS = ("turn", "goto")
 MOTOR_SPEED_MIN = -255
 MOTOR_SPEED_MAX = 255
 
-# Kleinster PWM-Betrag, mit dem der Motor anläuft (MotorHAL::MIN_DRIVE_SPEED).
-# Am Aufbau gemessen: unter ~150 dreht er selbst ohne Last nicht mehr, unter
-# Last liegt die Schwelle höher. Der OBC hebt kleinere Werte ohnehin an — hier
-# wird schon abgewiesen, damit ein zu kleiner Wert auffällt, statt still
-# verändert zu werden.
+# Bisher am Aufbau beobachtete Anlaufschwelle (MotorHAL::MIN_DRIVE_SPEED),
+# NICHT mehr als harte Untergrenze durchgesetzt (Stand 2026-08-26) — dient nur
+# noch als Referenzwert für die GUI, seit ein Bodentest die reale Schwelle
+# durch Werte darunter vermessen soll.
 MOTOR_MIN_DRIVE = 220
 
 # Grenzen für 'angle' bei action="turn". ±3600° = 10 Umdrehungen; alles darüber
@@ -184,10 +196,11 @@ def _send(opcode: int, dest: int, label: str, arg: int = 0):
 @command_bp.route("/command/motor", methods=["POST"])
 def motor():
     """
-    Steuert den Motor.
+    Steuert einen der beiden (baugleichen) Motoren.
 
     Body (JSON):
-      { "action": "on"|"off"|"zero"|"turn"|"goto",
+      { "motor":  1|2, optional (Standard: 1),
+        "action": "on"|"off"|"zero"|"turn"|"goto",
         "speed":  <-255..255, optional, nur bei "on">,
         "angle":  <-3600..3600, bei "turn" und "goto">,
         "dest":   <0-7, optional> }
@@ -210,9 +223,14 @@ def motor():
     body = request.get_json(silent=True) or {}
     action = str(body.get("action", "")).strip().lower()
 
-    if action not in MOTOR_OPCODES:
+    unit, err = _read_ranged_int(body, "motor", 1, 2, default=1)
+    if err:
+        return err
+    motor_opcodes = MOTOR_OPCODES_BY_UNIT[unit]
+
+    if action not in motor_opcodes:
         return jsonify({
-            "error": f"'action' muss eines von {sorted(MOTOR_OPCODES)} sein",
+            "error": f"'action' muss eines von {sorted(motor_opcodes)} sein",
         }), 400
 
     dest, err = _read_dest(body)
@@ -222,14 +240,11 @@ def motor():
     # ARG bedeutet je nach Aktion etwas anderes und bleibt sonst 0.
     if action == "on":
         arg, err = _read_ranged_int(body, "speed", MOTOR_SPEED_MIN, MOTOR_SPEED_MAX)
-        # 0 ist erlaubt und heißt "OBC nimmt seine DEFAULT_ON_SPEED".
-        if not err and arg != 0 and abs(arg) < MOTOR_MIN_DRIVE:
-            return jsonify({
-                "error": f"'speed' muss betragsmäßig mindestens {MOTOR_MIN_DRIVE} "
-                         f"sein (oder 0 für den Default) — darunter läuft der "
-                         f"Motor nicht an.",
-            }), 400
-        label = f"motor on (speed={arg})"
+        # KEINE MOTOR_MIN_DRIVE-Sperre mehr (Stand 2026-08-26): Bodentest, um
+        # die reale Anlaufschwelle zu vermessen ("ab welchem PWM reagiert er
+        # noch"). setSpeed() im OBC hebt kleine Werte auch nicht mehr an
+        # (siehe motor_hal.cpp) — 0 bleibt weiterhin "OBC nimmt DEFAULT_ON_SPEED".
+        label = f"motor {unit} on (speed={arg})"
     elif action in MOTOR_ANGLE_ACTIONS:
         arg, err = _read_ranged_int(body, "angle", MOTOR_ANGLE_MIN, MOTOR_ANGLE_MAX)
         # 'goto 0' ist gueltig (Fahrt auf die Nullage), 'turn 0' waere sinnlos.
@@ -240,14 +255,14 @@ def motor():
                 "error": f"'angle' ist bei action='{action}' erforderlich",
             }), 400
         bezug = "absolut" if action == "goto" else "relativ"
-        label = f"motor {action} ({arg} Grad {bezug})"
+        label = f"motor {unit} {action} ({arg} Grad {bezug})"
     else:
-        arg, err, label = 0, None, f"motor {action}"
+        arg, err, label = 0, None, f"motor {unit} {action}"
 
     if err:
         return err
 
-    return _send(MOTOR_OPCODES[action], dest, label, arg)
+    return _send(motor_opcodes[action], dest, label, arg)
 
 
 @command_bp.route("/command/force/tare", methods=["POST"])

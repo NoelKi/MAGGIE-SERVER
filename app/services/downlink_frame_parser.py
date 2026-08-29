@@ -36,7 +36,7 @@ DATA-Layout:
 Skalierung (Bodenstation):
   accel [m/s²] = count · 9.80665 / 10920   (±3 g)
   gyro  [°/s]  = count · 1 / 65.536         (±500 °/s)
-  force [N]    = count · FORCE_TELE_DIV / counts_per_gram · 9.80665/1000
+  force [N]    = count · FORCE{1,2}_TELE_DIV / counts_per_gram · 9.80665/1000
 
 Kraftsensor 2 ist ein Eigenbau: Der OBC funkt nur die vier Rohzellen, den
 Kraftvektor rechnet erst dieser Parser (siehe FORCE2_CELL_ANGLES_DEG).
@@ -72,7 +72,8 @@ IMU_ACCEL = 0x01
 IMU_GYRO  = 0x02
 
 # MSGID2 – Nachrichtentyp (MOTOR-Subsystem)
-MOTOR_STATE = 0x01
+MOTOR_STATE  = 0x01   # Motor 1
+MOTOR_STATE2 = 0x02   # Motor 2 (baugleich zu Motor 1)
 
 # MSGID2 – Nachrichtentyp (FORCE-Subsystem)
 FORCE_TARGET1 = 0x01   # 3 Zellen X/Y/Z
@@ -114,11 +115,20 @@ SUBSYS_BIT_MOTOR    = 0x02
 SUBSYS_BIT_DOWNLINK = 0x04
 SUBSYS_BIT_FORCE1   = 0x08
 SUBSYS_BIT_FORCE2   = 0x10
+SUBSYS_BIT_MOTOR2   = 0x20
 
 # Rohe REXUS-Leitungspegel (DATA[6], identisch zu DL_REXUS_* in rexus_hal.hpp)
 REXUS_BIT_L0   = 0x01
 REXUS_BIT_SOE  = 0x02
 REXUS_BIT_SODS = 0x04
+
+# Aktiv-Pegel der REXUS-Startsignale — identisch zu REXUS_ACTIVE_HIGH in
+# MAGGIE_OBC/include/pin_config.hpp. Die rexus_l0/soe/sods-Bits oben sind der
+# ROHE elektrische Pegel (bewusst so gewaehlt, siehe REXUSHAL::rawBits()) —
+# bei aktiv-LOW-Verdrahtung bedeutet raw=true also "Leitung ruht", nicht
+# "Signal ausgeloest". Fuer eine Anzeige "aktiv/inaktiv" muss das umgedreht
+# werden (siehe _decode_sys unten, l0_active/soe_active/sods_active).
+REXUS_ACTIVE_HIGH = False
 
 # MissionState-Werte (identisch zu MAGGIE_OBC/include/statemachine/mission_state.hpp)
 # 1..4 sind fuer die frühere Flugsequenz (ARMED/ASCENT/EXPERIMENT/SAFE)
@@ -143,10 +153,17 @@ GYRO_SCALE  = 1.0 / 65.536         # int16-Count → °/s
 # ── Kraftsensoren (HX711) ──────────────────────────────────────────────────────
 #
 # Teiler, mit dem der OBC die tarierten 24-Bit-Counts ins int16 des Frames
-# bringt. MUSS mit FORCE_TELE_DIV in MAGGIE_OBC/include/hal/force_hal.hpp
-# uebereinstimmen — wird er dort erhoeht (weil Werte saturieren), gehoert er
-# hier mit.
-FORCE_TELE_DIV = 1
+# bringt — je Sensor eigener Wert, weil beide Wandlergruppen unterschiedlich
+# viele Rohcounts pro Gramm liefern. MUSS mit FORCE1_TELE_DIV / FORCE2_TELE_DIV
+# in MAGGIE_OBC/include/hal/force_hal.hpp uebereinstimmen — wird dort erhoeht
+# (weil Werte saturieren), gehoert der gleichnamige Wert hier mit.
+#
+# Bodentest 2026-08-24: Sensor 1 saettigte bei DIV=1 schon bei ca. 10 g
+# (Nennlast 20 N ≈ 2039 g) → DIV=256 gewaehlt (Vollausschlag ≈ 2560 g).
+# Sensor 2 (10 kg/Zelle) noch nicht einzeln gemessen — DIV=256 vorerst als
+# Schaetzung uebernommen (siehe Herleitung in force_hal.hpp).
+FORCE1_TELE_DIV = 256
+FORCE2_TELE_DIV = 256
 
 # Umrechnung Gramm → Newton.
 _G_TO_N = 9.80665 / 1000.0
@@ -334,24 +351,42 @@ def _decode_imu_gyro(data: bytes, status2: int) -> dict:
     }
 
 
-def _decode_motor(data: bytes, status2: int) -> dict:
+def _motor_fields(data: bytes, status2: int, prefix: str) -> dict:
+    """Gemeinsame Vorarbeit für Motor 1 und Motor 2 — siehe _decode_motor(2)."""
     # DATA: [pos(int32 BE) pwm(int16 BE) state(uint8) spare]
     # 'pwm' = vorzeichenbehafteter PWM-Wert (-255..255).
     position, pwm, state, _spare = struct.unpack_from(">ihBB", data)
     return {
-        "position":    position,   # rohe Encoder-Counts, der belastbare Wert
-        "revolutions": round(position / MOTOR_COUNTS_PER_REV, 4),
-        "angle_deg":   round(position * MOTOR_DEG_PER_COUNT, 2),
-        "pwm":         pwm,
-        "on":          bool(state & MOTOR_STATE_ON),
-        "encoder_ok":  bool(state & MOTOR_STATE_ENCODER_OK),
-        "turning":     bool(state & MOTOR_STATE_TURNING),
-        "turn_failed": bool(state & MOTOR_STATE_TURN_FAILED),
+        f"{prefix}position":    position,   # rohe Encoder-Counts, der belastbare Wert
+        f"{prefix}revolutions": round(position / MOTOR_COUNTS_PER_REV, 4),
+        f"{prefix}angle_deg":   round(position * MOTOR_DEG_PER_COUNT, 2),
+        f"{prefix}pwm":         pwm,
+        f"{prefix}on":          bool(state & MOTOR_STATE_ON),
+        f"{prefix}encoder_ok":  bool(state & MOTOR_STATE_ENCODER_OK),
+        f"{prefix}turning":     bool(state & MOTOR_STATE_TURNING),
+        f"{prefix}turn_failed": bool(state & MOTOR_STATE_TURN_FAILED),
     }
 
 
+def _decode_motor(data: bytes, status2: int) -> dict:
+    """MOTOR/STATE — Motor 1."""
+    return _motor_fields(data, status2, "")
+
+
+def _decode_motor2(data: bytes, status2: int) -> dict:
+    """
+    MOTOR/STATE2 — Motor 2, baugleich zu Motor 1.
+
+    Eigenes Measurement ("motor2") und mit "motor2_" prefixte Feldnamen, damit
+    beide Motoren gleichzeitig in denselben Live-Werten (GUI) auftauchen
+    können, ohne sich gegenseitig zu überschreiben — analog zu Kraftsensor 2
+    ("force2_*").
+    """
+    return _motor_fields(data, status2, "motor2_")
+
+
 def _force_channels(data: bytes, status2: int, count: int,
-                    counts_per_gram: tuple) -> tuple[list[int], list[float], dict]:
+                    counts_per_gram: tuple, tele_div: int) -> tuple[list[int], list[float], dict]:
     """
     Gemeinsame Vorarbeit beider FORCE-Typen.
 
@@ -360,7 +395,7 @@ def _force_channels(data: bytes, status2: int, count: int,
     """
     raw = struct.unpack_from(">" + "h" * count, data)
 
-    counts = [v * FORCE_TELE_DIV for v in raw]
+    counts = [v * tele_div for v in raw]
     newton = [c / counts_per_gram[i] * _G_TO_N for i, c in enumerate(counts)]
 
     flags = {
@@ -376,7 +411,7 @@ def _force_channels(data: bytes, status2: int, count: int,
 
 def _decode_force(data: bytes, status2: int) -> dict:
     """FORCE/TARGET1 — drei Zellen X/Y/Z, keine Verrechnung noetig."""
-    counts, newton, flags = _force_channels(data, status2, 3, FORCE1_COUNTS_PER_GRAM)
+    counts, newton, flags = _force_channels(data, status2, 3, FORCE1_COUNTS_PER_GRAM, FORCE1_TELE_DIV)
     axes = ("x", "y", "z")
 
     out = {}
@@ -387,7 +422,7 @@ def _decode_force(data: bytes, status2: int) -> dict:
         out[f"force_{axis}"] = round(newton[i], 4)
         # Saturiert = der Wert lag ausserhalb des int16 und ist abgeschnitten.
         # In der Kurve sieht das aus wie ein Plateau, ist aber keins —
-        # Gegenmittel: FORCE_TELE_DIV im OBC UND hier erhoehen.
+        # Gegenmittel: FORCE1_TELE_DIV im OBC UND hier erhoehen.
         out[f"force_sat_{axis}"] = bool(status2 & FORCE_FLAG_SAT[i])
 
     out["force_tared"] = flags["tared"]
@@ -403,7 +438,7 @@ def _decode_force2(data: bytes, status2: int) -> dict:
     Kraftvektor entsteht ERST HIER (Clarke-Transformation, siehe
     FORCE2_CELL_ANGLES_DEG) — der OBC funkt bewusst nur die Rohkanaele.
     """
-    counts, newton, flags = _force_channels(data, status2, 4, FORCE2_COUNTS_PER_GRAM)
+    counts, newton, flags = _force_channels(data, status2, 4, FORCE2_COUNTS_PER_GRAM, FORCE2_TELE_DIV)
     cells = ("a", "b", "c", "d")
 
     out = {}
@@ -441,6 +476,15 @@ def _decode_sys(data: bytes, status2: int) -> dict:
     # DATA: [state(uint8) subsys(uint8) uptime_ms(uint32 BE) rexus(uint8) spare]
     state, subsys, uptime_ms = struct.unpack_from(">BBI", data)
     rexus = data[6] if len(data) > 6 else 0
+
+    raw_l0   = bool(rexus & REXUS_BIT_L0)
+    raw_soe  = bool(rexus & REXUS_BIT_SOE)
+    raw_sods = bool(rexus & REXUS_BIT_SODS)
+
+    # asserted = Signal liegt WIRKLICH an, unabhaengig vom Leitungspegel.
+    def _asserted(raw: bool) -> bool:
+        return raw if REXUS_ACTIVE_HIGH else not raw
+
     return {
         "state":        state,
         "state_name":   MISSION_STATES.get(state, f"UNKNOWN_{state}"),
@@ -450,19 +494,27 @@ def _decode_sys(data: bytes, status2: int) -> dict:
         "downlink_ok":  bool(subsys & SUBSYS_BIT_DOWNLINK),
         "force1_ok":    bool(subsys & SUBSYS_BIT_FORCE1),
         "force2_ok":    bool(subsys & SUBSYS_BIT_FORCE2),
+        "motor2_ok":    bool(subsys & SUBSYS_BIT_MOTOR2),
         # Rohe REXUS-Leitungspegel (nicht entprellt), siehe DL_REXUS_* im OBC.
         # Der OBC wertet sie derzeit nicht aus - sie dienen nur der Pruefung der
         # Verkabelung am Bodenaufbau.
-        "rexus_l0":     bool(rexus & REXUS_BIT_L0),
-        "rexus_soe":    bool(rexus & REXUS_BIT_SOE),
-        "rexus_sods":   bool(rexus & REXUS_BIT_SODS),
+        "rexus_l0":     raw_l0,
+        "rexus_soe":    raw_soe,
+        "rexus_sods":   raw_sods,
+        # Interpretierte Startsignale fuer die GUI-Anzeige "aktiv/inaktiv" —
+        # bereits um REXUS_ACTIVE_HIGH korrigiert (siehe oben).
+        # L0 = Lift-Off, SOE = Start Of Experiment, SODS = Start Of Data Storage.
+        "l0_active":    _asserted(raw_l0),
+        "soe_active":   _asserted(raw_soe),
+        "sods_active":  _asserted(raw_sods),
     }
 
 
 # ── Registrierte Nachrichtentypen ─────────────────────────────────────────────────
 register_message(SUBSYS_IMU, IMU_ACCEL, "imu", "accel", "imu", _decode_imu_accel)
 register_message(SUBSYS_IMU, IMU_GYRO,  "imu", "gyro",  "imu", _decode_imu_gyro)
-register_message(SUBSYS_MOTOR, MOTOR_STATE, "motor", "state", "motor", _decode_motor)
+register_message(SUBSYS_MOTOR, MOTOR_STATE,  "motor", "state",  "motor",  _decode_motor)
+register_message(SUBSYS_MOTOR, MOTOR_STATE2, "motor", "state2", "motor2", _decode_motor2)
 register_message(SUBSYS_FORCE, FORCE_TARGET1, "force", "target1", "force", _decode_force)
 register_message(SUBSYS_FORCE, FORCE_TARGET2, "force", "target2", "force2", _decode_force2)
 def _decode_sys_uplink(data: bytes, status2: int) -> dict:
