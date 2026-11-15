@@ -131,12 +131,17 @@ REXUS_BIT_SODS = 0x04
 REXUS_ACTIVE_HIGH = False
 
 # MissionState-Werte (identisch zu MAGGIE_OBC/include/statemachine/mission_state.hpp)
-# 1..4 sind fuer die frühere Flugsequenz (ARMED/ASCENT/EXPERIMENT/SAFE)
-# reserviert und werden vom aktuellen OBC nicht gesendet.
+# Flugablauf: ARMED -> ASCENT -> EXPERIMENT -> ROBOT_ARM -> DESCENT
+# (Zeiten: MAGGIE_OBC/include/mission_timeline.hpp)
 MISSION_STATES = {
     0: "PRE_LAUNCH",
+    1: "ARMED",
+    2: "ASCENT",
+    3: "EXPERIMENT",
+    4: "DESCENT",
     5: "ABORT",
     6: "TEST",
+    7: "ROBOT_ARM",
 }
 
 # Motor-Positionsskalierung (identisch zur OBC-Firmware motor_hal.hpp).

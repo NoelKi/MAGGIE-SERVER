@@ -60,14 +60,21 @@ class TcUplink:
 
     # -- Öffentliche API ----------------------------------------------------
     def start(self, port: str, baud: int) -> None:
-        """(Neu-)Öffnet den seriellen TC-Port."""
+        """
+        Merkt sich den TC-Port und öffnet ihn.
+
+        Der Port gilt danach als gewollt, AUCH wenn das Öffnen scheitert (Adapter
+        noch nicht eingesteckt, gerade neu enumeriert): send_sdc() und
+        snapshot() öffnen ihn dann selbst, sobald er da ist. Kein Zeitfenster,
+        kein Server-Neustart nötig - nur stop() beendet das.
+        """
         if not SERIAL_AVAILABLE:
             raise RuntimeError("pyserial nicht installiert")
         with self._lock:
             self.port = port
             self.baud = int(baud)
-            self._open_locked()
             self._wanted = True
+            self._open_locked()
         log.info("RXSM-TC-Uplink verbunden: %s @ %d Baud", port, baud)
 
     def stop(self) -> None:
@@ -96,6 +103,11 @@ class TcUplink:
         with self._lock:
             if not (self._wanted and self.port):
                 raise RuntimeError("TC-Uplink nicht verbunden")
+
+            # Port nicht (mehr) offen - z.B. Adapter erst nach dem Serverstart
+            # eingesteckt: jetzt öffnen. Scheitert das, bekommt die GUI den
+            # Grund als Fehler zurück.
+            self._ensure_open_locked()
 
             mcnt = self._mcnt
             self._mcnt = (self._mcnt + 1) & 0xFF
@@ -130,7 +142,13 @@ class TcUplink:
         }
 
     def snapshot(self) -> dict:
-        """Statusabbild für /api/command/status."""
+        """Statusabbild für /api/command/status - verbindet dabei ggf. neu."""
+        with self._lock:
+            if self._wanted and self.port:
+                try:
+                    self._ensure_open_locked()
+                except RuntimeError:
+                    pass   # Grund steht in self.error
         return {
             "available": SERIAL_AVAILABLE,
             "connected": self.is_running(),
@@ -140,6 +158,14 @@ class TcUplink:
         }
 
     # -- Intern -------------------------------------------------------------
+    def _ensure_open_locked(self) -> None:
+        """Öffnet den Port, wenn er zu ist oder sein Device-Node nicht mehr
+        existiert. Erwartet self._lock. Wirft RuntimeError."""
+        if self._ser is not None and self._ser.is_open and self._node_alive():
+            return
+        self._open_locked()
+        log.info("TC-Uplink (wieder) verbunden: %s @ %d Baud", self.port, self.baud)
+
     def _open_locked(self) -> None:
         """Öffnet self.port neu. Erwartet self._lock. Wirft RuntimeError."""
         self._close_locked()
@@ -191,40 +217,6 @@ class TcUplink:
 tc = TcUplink()
 
 
-# Boot-Race: Startet der Server, bevor udev den USB-Adapter-Symlink
-# (/dev/serial/by-id/...) angelegt hat, scheitert der erste Connect-Versuch
-# mit "No such file or directory" - obwohl das Geraet Sekunden spaeter da ist.
-# Der Downlink-Reader (serial_listener.py) faengt das mit einem eigenen
-# Reconnect-Thread ab; dieselbe Race betrifft den TC-Uplink genauso.
-_AUTOSTART_RETRY_INTERVAL_S = 2.0
-_AUTOSTART_RETRY_MAX_TRIES  = 30   # ~60s Kulanzfenster, dann eher ein echter Fehler
-
-
-def _autostart_retry_loop(port: str, baud: int) -> None:
-    """
-    Versucht im Hintergrund erneut zu verbinden, bis es klappt oder das
-    Kulanzfenster ablaeuft.
-
-    Bewusst NUR fuer den Boot-Race gedacht: Bricht endgueltig ab, sobald der
-    TC-Uplink laeuft (egal ob durch diesen Loop oder durch einen manuellen
-    POST /api/command/connect) - ein spaeteres manuelles disconnect() soll
-    NICHT automatisch wieder verbunden werden.
-    """
-    for _ in range(_AUTOSTART_RETRY_MAX_TRIES):
-        time.sleep(_AUTOSTART_RETRY_INTERVAL_S)
-        if tc.is_running():
-            return   # zwischenzeitlich manuell verbunden - nichts mehr zu tun
-        try:
-            tc.start(port, baud)
-            log.info("TC-Uplink-Autostart nach Retry verbunden: %s @ %d Baud", port, baud)
-            return
-        except RuntimeError:
-            continue
-    log.warning("TC-Uplink-Autostart auch nach %d Versuchen fehlgeschlagen (%s) - "
-                "manuell per POST /api/command/connect verbinden.",
-                _AUTOSTART_RETRY_MAX_TRIES, port)
-
-
 def init_tc_uplink(app) -> None:
     """
     Initialisiert den TC-Uplink aus der App-Config und verbindet ggf. automatisch.
@@ -243,13 +235,11 @@ def init_tc_uplink(app) -> None:
         try:
             tc.start(port, baud)
         except RuntimeError as exc:
-            log.warning("TC-Uplink-Autostart fehlgeschlagen (%s) - "
-                        "Retry im Hintergrund fuer bis zu %ds.",
-                        exc, int(_AUTOSTART_RETRY_INTERVAL_S * _AUTOSTART_RETRY_MAX_TRIES))
-            threading.Thread(
-                target=_autostart_retry_loop, args=(port, baud),
-                name="tc-uplink-autostart-retry", daemon=True,
-            ).start()
+            # Typisch: Server startet, bevor der USB-Adapter da ist. Kein Problem -
+            # der Port bleibt gewollt und wird beim ersten Senden bzw. bei der
+            # naechsten Statusabfrage geoeffnet (siehe TcUplink.start).
+            log.warning("TC-Uplink noch nicht offen (%s) - wird automatisch "
+                        "verbunden, sobald der Adapter da ist.", exc)
     else:
         log.info("TC-Uplink im Standby (kein Port konfiguriert — "
                  "Port zur Laufzeit über /api/command/connect wählen)")

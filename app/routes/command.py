@@ -89,6 +89,10 @@ TEST_OPCODES = {
 
 OPCODE_ABORT = 0x1F
 
+# Zurueck nach PRE_LAUNCH, aus jedem Zustand (Testwerkzeug - im Flug gibt es
+# keinen Uplink). Zustaende bleiben sonst ueber jeden Neustart erhalten.
+OPCODE_STATE_RESET = 0x12
+
 # OPCODE (UplinkOpcode) — Sensoren (0x2x), zustandsunabhängig.
 # Tarieren bewegt keinen Aktor und liegt deshalb bewusst nicht hinter der
 # TEST-Sperre.
@@ -335,6 +339,20 @@ def abort():
         return err
 
     return _send(OPCODE_ABORT, dest, "abort")
+
+
+@command_bp.route("/command/state-reset", methods=["POST"])
+def state_reset():
+    """
+    Zurueck nach PRE_LAUNCH - aus jedem Zustand (Testwerkzeug).
+
+    Body (JSON): { "dest": <0-7, optional> }
+    """
+    dest, err = _read_dest(request.get_json(silent=True) or {})
+    if err:
+        return err
+
+    return _send(OPCODE_STATE_RESET, dest, "state reset")
 
 
 @command_bp.route("/command/status", methods=["GET"])
