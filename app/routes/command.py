@@ -127,7 +127,7 @@ ARM_ALL_JOINTS_ACTIONS = ("stop", "inhibit")
 ARM_MAX_JOINTS = 8
 ARM_JOG_MAX_DEG = 30
 ARM_SPEED_MIN_DEG_S = 1
-ARM_SPEED_MAX_DEG_S = 255
+ARM_SPEED_MAX_DEG_S = 10    # Vorgabe Team: 10 °/s (OBC: ARM_JOG_MAX_VEL_DEG_S)
 
 # UART-Ziel-Adresse am RXSM (0-7), auf der der OBC lauscht. Ggf. an den
 # physischen Aufbau des Test Modules anpassen.
@@ -338,7 +338,7 @@ def arm():
       { "action": "stop"|"inhibit"|"release"|"jog"|"velocity"|"blink"|"traj_test",
         "joint":  <1..8; 0 = alle, nur bei stop/inhibit>,
         "angle":  <±1..±30 Grad, bei "jog">,
-        "speed":  <1..255 Grad/s, bei "velocity">,
+        "speed":  <1..10 Grad/s, bei "velocity">,
         "dest":   <0-7, optional> }
 
     Ablauf am Boden: TEST betreten → "velocity" (langsam!) → "release" →

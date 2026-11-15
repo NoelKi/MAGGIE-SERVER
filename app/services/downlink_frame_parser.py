@@ -39,6 +39,7 @@ DATA-Layout:
   ARM/RCU_GYRO:  [gx gy gz 0 0]   (3× int16, ±500 °/s)
   SYS/ARM_LINK:  [frames_ok(uint16) frames_bad(uint16) last_msg last_node
                   silence(0,1 s) freefall_count], STATUS2 bit0 = Link lebt
+  SYS/ARM_TRAJ:  [phase result node step(uint16) max_err(uint16, 0,01°) runs]
 
 Die ARM-Werte reicht der OBC unverändert von der Roboterarm-RCU durch
 (LISA-ODISEE ICD v0.9, MAGGIE_OBC/include/hal/arm_hal.hpp). Referenz für die
@@ -96,6 +97,7 @@ SYS_STATE      = 0x01
 SYS_UPLINK     = 0x02
 SYS_UPLINK_RAW = 0x03
 SYS_ARM_LINK   = 0x04
+SYS_ARM_TRAJ   = 0x05
 
 # MSGID2 – ARM (DownlinkArmMsg)
 ARM_JOINT     = 0x01
@@ -681,6 +683,39 @@ def _decode_sys_arm_link(data: bytes, status2: int) -> dict:
     }
 
 
+# SYS/ARM_TRAJ — Status des Trajektorientests (MAGGIE_OBC ArmTrajPlayer).
+# Werte müssen zu ArmTrajPlayer::Phase / ::Result passen.
+ARM_TRAJ_PHASES = {0: "IDLE", 1: "SETTLE", 2: "RUN", 3: "FINISH"}
+ARM_TRAJ_RESULTS = {
+    0: "NONE",            # seit dem Booten nicht gestartet
+    1: "RUNNING",
+    2: "DONE",            # fertig, alle Gelenke am Startwinkel
+    3: "SETTLE_MOVED",    # bewegt sich beim Halten (Bezug MOVE_ABS)
+    4: "NO_STATE",        # keine JOINT_STATE mehr
+    5: "TRACK_ERROR",     # Schleppfehler zu groß
+    6: "TX_FULL",
+    7: "FINISH_TIMEOUT",  # Startwinkel nicht erreicht
+    8: "CANCELLED",       # STOP/INHIBIT, TEST verlassen, ABORT
+    9: "REFUSED",         # Start abgelehnt (Tabelle, Gelenk, Link)
+}
+
+
+def _decode_sys_arm_traj(data: bytes, status2: int) -> dict:
+    # DATA: [phase result node step(uint16 BE) max_err(uint16 BE, 0,01°) runs]
+    phase, result, node, step, max_err, runs = struct.unpack_from(">BBBHHB", data)
+    return {
+        "arm_traj_phase":       phase,
+        "arm_traj_phase_name":  ARM_TRAJ_PHASES.get(phase, f"0x{phase:02X}"),
+        "arm_traj_result":      result,
+        "arm_traj_result_name": ARM_TRAJ_RESULTS.get(result, f"0x{result:02X}"),
+        "arm_traj_node":        node or None,
+        "arm_traj_step":        step,
+        "arm_traj_t_s":         round(step * 0.1, 1),
+        "arm_traj_max_err_deg": round(max_err / 100.0, 2),
+        "arm_traj_runs":        runs,
+    }
+
+
 register_message(SUBSYS_ARM, ARM_JOINT,     "arm", "joint",     "arm", _decode_arm_joint)
 register_message(SUBSYS_ARM, ARM_VOLTAGE,   "arm", "voltage",   "arm", _decode_arm_voltage)
 register_message(SUBSYS_ARM, ARM_TEMP,      "arm", "temp",      "arm", _decode_arm_temp)
@@ -693,6 +728,8 @@ register_message(SUBSYS_SYS, SYS_UPLINK_RAW, "sys", "uplink_raw", "obc",
                  _decode_sys_uplink_raw)
 register_message(SUBSYS_SYS, SYS_ARM_LINK, "sys", "arm_link", "obc",
                  _decode_sys_arm_link)
+register_message(SUBSYS_SYS, SYS_ARM_TRAJ, "sys", "arm_traj", "obc",
+                 _decode_sys_arm_traj)
 
 # NEUEN WERT HINZUFÜGEN — dreimal etwas, sonst nichts. Kraftsensor 1 oben ist
 # das gelebte Beispiel:
