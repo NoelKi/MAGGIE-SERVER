@@ -150,18 +150,31 @@ def _build_payload(opcode: int, arg: int = 0) -> bytes:
     return bytes([UL_START]) + body + bytes([_crc8(body), UL_END])
 
 
-def _read_dest(body: dict):
-    """Liest 'dest' aus dem Request-Body. Gibt (dest, fehler_response) zurück."""
+class _BadRequest(Exception):
+    """Ungültiger Request-Parameter — wird zu 400 + {"error": msg}."""
+
+    def __init__(self, msg: str):
+        super().__init__(msg)
+        self.msg = msg
+
+
+@command_bp.errorhandler(_BadRequest)
+def _bad_request(e: _BadRequest):
+    return jsonify({"error": e.msg}), 400
+
+
+def _read_dest(body: dict) -> int:
+    """Liest 'dest' aus dem Request-Body. Ungültig -> _BadRequest (400)."""
     try:
         dest = int(body.get("dest", DEFAULT_MOTOR_DEST))
     except (TypeError, ValueError):
-        return None, (jsonify({"error": "'dest' must be an integer"}), 400)
+        raise _BadRequest("'dest' must be an integer")
     if not 0 <= dest <= 7:
-        return None, (jsonify({"error": "'dest' must be in range 0..7"}), 400)
-    return dest, None
+        raise _BadRequest("'dest' must be in range 0..7")
+    return dest
 
 
-def _read_ranged_int(body: dict, key: str, lo: int, hi: int, default: int = 0):
+def _read_ranged_int(body: dict, key: str, lo: int, hi: int, default: int = 0) -> int:
     """
     Liest einen optionalen ganzzahligen Parameter aus dem Request-Body.
 
@@ -169,19 +182,17 @@ def _read_ranged_int(body: dict, key: str, lo: int, hi: int, default: int = 0):
     werden — deshalb 400 statt clamp.
 
     Returns:
-        (wert, fehler_response) — fehler_response ist None, wenn alles passt.
+        den Wert (oder default, wenn er fehlt). Ungültig -> _BadRequest (400).
     """
     if key not in body or body[key] is None:
-        return default, None
+        return default
     try:
         value = int(body[key])
     except (TypeError, ValueError):
-        return None, (jsonify({"error": f"'{key}' must be an integer"}), 400)
+        raise _BadRequest(f"'{key}' must be an integer")
     if not lo <= value <= hi:
-        return None, (jsonify({
-            "error": f"'{key}' must be in range {lo}..{hi}",
-        }), 400)
-    return value, None
+        raise _BadRequest(f"'{key}' must be in range {lo}..{hi}")
+    return value
 
 
 def _send(opcode: int, dest: int, label: str, arg: int = 0):
@@ -254,9 +265,7 @@ def motor():
     body = request.get_json(silent=True) or {}
     action = str(body.get("action", "")).strip().lower()
 
-    unit, err = _read_ranged_int(body, "motor", 1, 2, default=1)
-    if err:
-        return err
+    unit = _read_ranged_int(body, "motor", 1, 2, default=1)
     motor_opcodes = MOTOR_OPCODES_BY_UNIT[unit]
 
     if action not in motor_opcodes:
@@ -264,34 +273,29 @@ def motor():
             "error": f"'action' muss eines von {sorted(motor_opcodes)} sein",
         }), 400
 
-    dest, err = _read_dest(body)
-    if err:
-        return err
+    dest = _read_dest(body)
 
     # ARG bedeutet je nach Aktion etwas anderes und bleibt sonst 0.
     if action == "on":
-        arg, err = _read_ranged_int(body, "speed", MOTOR_SPEED_MIN, MOTOR_SPEED_MAX)
+        arg = _read_ranged_int(body, "speed", MOTOR_SPEED_MIN, MOTOR_SPEED_MAX)
         # KEINE MOTOR_MIN_DRIVE-Sperre mehr (Stand 2026-08-26): Bodentest, um
         # die reale Anlaufschwelle zu vermessen ("ab welchem PWM reagiert er
         # noch"). setSpeed() im OBC hebt kleine Werte auch nicht mehr an
         # (siehe motor_hal.cpp) — 0 bleibt weiterhin "OBC nimmt DEFAULT_ON_SPEED".
         label = f"motor {unit} on (speed={arg})"
     elif action in MOTOR_ANGLE_ACTIONS:
-        arg, err = _read_ranged_int(body, "angle", MOTOR_ANGLE_MIN, MOTOR_ANGLE_MAX)
+        arg = _read_ranged_int(body, "angle", MOTOR_ANGLE_MIN, MOTOR_ANGLE_MAX)
         # 'goto 0' ist gueltig (Fahrt auf die Nullage), 'turn 0' waere sinnlos.
-        if not err and arg == 0 and action == "turn":
+        if arg == 0 and action == "turn":
             return jsonify({"error": "'angle' ist bei action='turn' erforderlich"}), 400
-        if not err and "angle" not in body:
+        if "angle" not in body:
             return jsonify({
                 "error": f"'angle' ist bei action='{action}' erforderlich",
             }), 400
         bezug = "absolut" if action == "goto" else "relativ"
         label = f"motor {unit} {action} ({arg} Grad {bezug})"
     else:
-        arg, err, label = 0, None, f"motor {unit} {action}"
-
-    if err:
-        return err
+        arg, label = 0, f"motor {unit} {action}"
 
     return _send(motor_opcodes[action], dest, label, arg)
 
@@ -317,13 +321,9 @@ def force_tare():
     """
     body = request.get_json(silent=True) or {}
 
-    dest, err = _read_dest(body)
-    if err:
-        return err
+    dest = _read_dest(body)
 
-    sensor, err = _read_ranged_int(body, "sensor", FORCE_SENSOR_MIN, FORCE_SENSOR_MAX)
-    if err:
-        return err
+    sensor = _read_ranged_int(body, "sensor", FORCE_SENSOR_MIN, FORCE_SENSOR_MAX)
 
     label = "force tare (beide)" if sensor == 0 else f"force tare (Sensor {sensor})"
     return _send(OPCODE_FORCE_TARE, dest, label, sensor)
@@ -357,39 +357,29 @@ def arm():
             "error": f"'action' muss eines von {sorted(ARM_OPCODES)} sein",
         }), 400
 
-    dest, err = _read_dest(body)
-    if err:
-        return err
+    dest = _read_dest(body)
 
     if "joint" not in body:
         return jsonify({"error": "'joint' ist erforderlich"}), 400
     joint_min = 0 if action in ARM_ALL_JOINTS_ACTIONS else 1
-    joint, err = _read_ranged_int(body, "joint", joint_min, ARM_MAX_JOINTS)
-    if err:
-        return err
+    joint = _read_ranged_int(body, "joint", joint_min, ARM_MAX_JOINTS)
 
     value = 0
     if action == "jog":
         if "angle" not in body:
             return jsonify({"error": "'angle' ist bei action='jog' erforderlich"}), 400
-        value, err = _read_ranged_int(body, "angle", -ARM_JOG_MAX_DEG, ARM_JOG_MAX_DEG)
-        if err:
-            return err
+        value = _read_ranged_int(body, "angle", -ARM_JOG_MAX_DEG, ARM_JOG_MAX_DEG)
         if value == 0:
             return jsonify({"error": "'angle' darf nicht 0 sein"}), 400
         label = f"arm jog Gelenk {joint} ({value:+d} Grad)"
     elif action == "velocity":
         if "speed" not in body:
             return jsonify({"error": "'speed' ist bei action='velocity' erforderlich"}), 400
-        value, err = _read_ranged_int(body, "speed", ARM_SPEED_MIN_DEG_S, ARM_SPEED_MAX_DEG_S)
-        if err:
-            return err
+        value = _read_ranged_int(body, "speed", ARM_SPEED_MIN_DEG_S, ARM_SPEED_MAX_DEG_S)
         label = f"arm velocity Gelenk {joint} ({value} Grad/s)"
     elif action == "traj_test":
         # Höchstens zwei Gelenke (Freigabe des Teams, MAGGIE_OBC/CLAUDE.md).
-        value, err = _read_ranged_int(body, "joint2", 0, ARM_MAX_JOINTS, default=0)
-        if err:
-            return err
+        value = _read_ranged_int(body, "joint2", 0, ARM_MAX_JOINTS, default=0)
         if value == joint:
             return jsonify({"error": "'joint2' muss sich von 'joint' unterscheiden"}), 400
         label = f"arm traj_test Gelenk {joint}" + (f" + {value}" if value else "")
@@ -421,9 +411,7 @@ def test_state():
             "error": f"'action' muss eines von {sorted(TEST_OPCODES)} sein",
         }), 400
 
-    dest, err = _read_dest(body)
-    if err:
-        return err
+    dest = _read_dest(body)
 
     return _send(TEST_OPCODES[action], dest, f"test {action}")
 
@@ -435,9 +423,7 @@ def abort():
 
     Body (JSON): { "dest": <0-7, optional> }
     """
-    dest, err = _read_dest(request.get_json(silent=True) or {})
-    if err:
-        return err
+    dest = _read_dest(request.get_json(silent=True) or {})
 
     return _send(OPCODE_ABORT, dest, "abort")
 
@@ -449,9 +435,7 @@ def state_reset():
 
     Body (JSON): { "dest": <0-7, optional> }
     """
-    dest, err = _read_dest(request.get_json(silent=True) or {})
-    if err:
-        return err
+    dest = _read_dest(request.get_json(silent=True) or {})
 
     return _send(OPCODE_STATE_RESET, dest, "state reset")
 
