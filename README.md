@@ -2,7 +2,7 @@
 
 **REXUS Programme — v0.2.0**
 
-REST-API-Backend der MAGGIE Ground Station. Empfängt Telemetrie vom Onboard Computer (OBC) via UDP, speichert sie in InfluxDB und stellt sie dem MAGGIE-GS-Frontend über eine JWT-gesicherte REST-API bereit. Nutzerkonten und Authentifizierung laufen über PostgreSQL.
+REST-API-Backend der MAGGIE Ground Station. Empfängt Telemetrie vom Onboard Computer (OBC) via UDP, speichert sie in InfluxDB und stellt sie dem MAGGIE-GS-Frontend über eine JWT-gesicherte REST-API bereit.
 
 ---
 
@@ -12,7 +12,6 @@ REST-API-Backend der MAGGIE Ground Station. Empfängt Telemetrie vom Onboard Com
 - [Schnellstart](#schnellstart)
 - [Konfiguration](#konfiguration)
 - [Docker-Container](#docker-container)
-- [Datenbankmigrationen](#datenbankmigrationen)
 - [Standardnutzer](#standardnutzer)
 - [API-Endpunkte](#api-endpunkte)
 - [OBC-UDP-Protokoll](#obc-udp-protokoll)
@@ -47,15 +46,12 @@ pip install -r requirements.txt
 
 # 3. Umgebungsvariablen konfigurieren
 cp .env.example .env
-# → .env anpassen (JWT-Secret, DB-Passwörter, InfluxDB-Token)
+# → .env anpassen (JWT-Secret, InfluxDB-Token)
 
-# 4. Docker-Container starten (PostgreSQL + InfluxDB)
+# 4. Docker-Container starten (InfluxDB)
 docker compose up -d
 
-# 5. Datenbank initialisieren und migrieren
-flask db upgrade
-
-# 6. Server starten
+# 5. Server starten
 python run.py
 ```
 
@@ -70,11 +66,6 @@ Alle Einstellungen werden über Umgebungsvariablen (`.env`) eingelesen.
 | Variable | Beschreibung | Beispiel |
 |---|---|---|
 | `JWT_SECRET_KEY` | Geheimer Schlüssel für JWT-Signierung | `103039dfa2...` |
-| `POSTGRES_USER` | PostgreSQL-Benutzer | `maggie` |
-| `POSTGRES_PASSWORD` | PostgreSQL-Passwort | `maggie_secret` |
-| `POSTGRES_HOST` | PostgreSQL-Host | `localhost` |
-| `POSTGRES_PORT` | PostgreSQL-Port | `5432` |
-| `POSTGRES_DB` | Datenbankname | `maggie_users` |
 | `INFLUX_URL` | InfluxDB-URL | `http://localhost:8086` |
 | `INFLUX_TOKEN` | InfluxDB-API-Token | `XZpMX...` |
 | `INFLUX_ORG` | InfluxDB-Organisation | `MAGGIE` |
@@ -88,11 +79,10 @@ Eine Vorlage befindet sich in `.env.example`.
 
 ## Docker-Container
 
-`docker-compose.yml` definiert zwei persistente Container:
+`docker-compose.yml` definiert einen persistenten Container:
 
 | Container | Image | Port | Beschreibung |
 |---|---|---|---|
-| `postgres` | postgres:16 | 5432 | Nutzerdatenbank |
 | `influxdb` | influxdb:2.7 | 8086 | Zeitreihendatenbank für Telemetrie |
 
 ```bash
@@ -100,36 +90,11 @@ Eine Vorlage befindet sich in `.env.example`.
 docker compose up -d
 
 # Bereits existierende Container (ohne Compose) starten
-docker start influxdb postgres
+docker start influxdb
 
 # Logs anzeigen
 docker compose logs -f
 ```
-
----
-
-## Datenbankmigrationen
-
-Das Projekt verwendet **Flask-Migrate** (Alembic) für Schemamigrationen.
-
-```bash
-# Aktuelle Migration anzeigen
-flask db current
-
-# Alle Migrationen auflisten
-flask db history
-
-# Neue Migration nach Modelländerung erstellen
-flask db migrate -m "beschreibung"
-
-# Migrationen anwenden
-flask db upgrade
-
-# Eine Migration zurückrollen
-flask db downgrade
-```
-
-> **Hinweis:** Der Ordner `migrations/` wird von Pylance/Pyright absichtlich ausgeschlossen (`pyrightconfig.json`), da Alembic dynamische Proxys verwendet, die False-Positives erzeugen.
 
 ---
 
@@ -558,10 +523,8 @@ MAGGIE_server/
 ├── .env.example                  # Vorlage für neue Entwickler
 ├── .venv/                        # Python-Virtualenv
 ├── app/
-│   ├── __init__.py               # create_app() Factory: DB, Migrate, JWT, CORS, UDP-Start
-│   ├── extensions.py             # db = SQLAlchemy(), migrate = Migrate() (circular-import-safe)
-│   ├── models/
-│   │   └── user.py               # User-Modell (id, username, email, password_hash, role, ...)
+│   ├── __init__.py               # create_app() Factory: CORS, Socket.IO, UDP-Start
+│   ├── extensions.py             # socketio = SocketIO() (circular-import-safe)
 │   ├── routes/
 │   │   ├── auth.py               # POST /login, POST /register, GET /me
 │   │   ├── health.py             # GET /api/health
@@ -573,12 +536,9 @@ MAGGIE_server/
 │       ├── packet_parser.py      # 64-Byte-Binärprotokoll (parse_packet, build_packet, CRC-16/XModem)
 │       └── rxsm_tc_parser.py     # 24-Byte GMSK TC-Pakete (SMC/SDC-Typen)
 ├── config/
-│   └── settings.py               # Config-Klasse: JWT, PostgreSQL, InfluxDB, UDP
-├── docker-compose.yml            # PostgreSQL 16 + InfluxDB 2.7 mit persistenten Volumes
-├── migrations/                   # Alembic/Flask-Migrate (nicht manuell bearbeiten)
-│   └── versions/
-│       └── c434ae0b5186_initial_users_table.py
-├── pyrightconfig.json            # Schließt migrations/ aus der Pylance-Analyse aus
+│   └── settings.py               # Config-Klasse: InfluxDB, UDP, Serial
+├── docker-compose.yml            # InfluxDB 2.7 mit persistentem Volume
+├── pyrightconfig.json            # Pylance/Pyright-Konfiguration
 ├── requirements.txt              # Python-Abhängigkeiten
 ├── run.py                        # Einstiegspunkt, Banner, Port 3000
 └── tools/
@@ -634,10 +594,3 @@ curl http://localhost:3000/api/telemetry?measurement=imu \
   -H "Authorization: Bearer <token>"
 ```
 
-### Neue Migration erstellen
-
-```bash
-# Nach Änderungen an app/models/
-flask db migrate -m "add_column_xyz"
-flask db upgrade
-```

@@ -1,10 +1,8 @@
 {
   "include": ["app", "config", "tools", "run.py"],
   "exclude": [
-    "migrations",
     ".venv",
-    "__pycache__",
-    "**/migrations/**"
+    "__pycache__"
   ],
   "venvPath": ".",
   "venv": ".venv",

@@ -1,14 +1,14 @@
 from flask import Flask
 from flask_cors import CORS
 
-from app.extensions import db, migrate, socketio
+from app.extensions import socketio
 
 
 def create_app():
     """
     Flask App Factory.
 
-    Initialisiert alle Extensions (SQLAlchemy, Migrate, CORS, Socket.IO),
+    Initialisiert alle Extensions (CORS, Socket.IO),
     registriert Blueprints und startet den UDP-Listener für OBC-Pakete.
     """
     app = Flask(__name__)
@@ -18,8 +18,6 @@ def create_app():
 
     # Extensions initialisieren
     CORS(app, resources={r"/api/*": {"origins": "*"}})
-    db.init_app(app)
-    migrate.init_app(app, db)
     socketio.init_app(app)
 
     # Socket.IO-Handler registrieren (Import genügt — Dekoratoren binden sich
