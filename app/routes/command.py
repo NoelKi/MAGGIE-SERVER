@@ -113,8 +113,9 @@ ARM_OPCODES = {
     "jog":      0x33,   # relativ drehen, Low-Byte = int8 Grad — nur TEST
     "velocity": 0x34,   # Geschwindigkeit, Low-Byte = Grad/s — nur TEST
     "blink":    0x35,   # LED blinken (Gelenk finden) — alle Bodenzustände
-    # Trajektorien-Test an EINEM Gelenk (Tabelle in der Firmware, ±30° um den
+    # Trajektorientest an 1–2 Gelenken (Tabelle in der Firmware, ±30° um den
     # aktuellen Winkel, Ende = Start) — nur TEST. Abbruch mit "stop".
+    # Low-Byte = Node für Spalte 2 ("joint2", 0 = nur ein Gelenk).
     "traj_test": 0x36,
 }
 
@@ -384,6 +385,14 @@ def arm():
         if err:
             return err
         label = f"arm velocity Gelenk {joint} ({value} Grad/s)"
+    elif action == "traj_test":
+        # Höchstens zwei Gelenke (Freigabe des Teams, MAGGIE_OBC/CLAUDE.md).
+        value, err = _read_ranged_int(body, "joint2", 0, ARM_MAX_JOINTS, default=0)
+        if err:
+            return err
+        if value == joint:
+            return jsonify({"error": "'joint2' muss sich von 'joint' unterscheiden"}), 400
+        label = f"arm traj_test Gelenk {joint}" + (f" + {value}" if value else "")
     else:
         target = "alle Gelenke" if joint == 0 else f"Gelenk {joint}"
         label = f"arm {action} {target}"
