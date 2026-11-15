@@ -69,56 +69,57 @@ C-Struct für den OBC:
   #pragma pack(pop)
 """
 
-import struct
 import logging
+import struct
 from dataclasses import dataclass, field
-from typing import Optional
 
 log = logging.getLogger(__name__)
 
 # ── Konstanten ────────────────────────────────────────────────────────────────
-MAGIC           = 0x4D41          # 'MA'
-PROTOCOL_VER    = 0x0001
-HEADER_FORMAT   = ">HHIIBBH"     # Big-Endian: magic(2) version(2) seq(4) ts(4) type(1) flags(1) crc16(2) = 16 Bytes
-HEADER_SIZE     = struct.calcsize(HEADER_FORMAT)   # 16 Bytes
+MAGIC = 0x4D41  # 'MA'
+PROTOCOL_VER = 0x0001
+HEADER_FORMAT = (
+    ">HHIIBBH"  # Big-Endian: magic(2) version(2) seq(4) ts(4) type(1) flags(1) crc16(2) = 16 Bytes
+)
+HEADER_SIZE = struct.calcsize(HEADER_FORMAT)  # 16 Bytes
 
-PAYLOAD_SIZE    = 48
-PACKET_SIZE     = HEADER_SIZE + PAYLOAD_SIZE       # 64 Bytes gesamt
+PAYLOAD_SIZE = 48
+PACKET_SIZE = HEADER_SIZE + PAYLOAD_SIZE  # 64 Bytes gesamt
 
 # Measurement-Type-IDs
-TYPE_IMU         = 0x01
+TYPE_IMU = 0x01
 TYPE_ENVIRONMENT = 0x02
-TYPE_SYSTEM      = 0x04
-TYPE_HEARTBEAT   = 0xFF
+TYPE_SYSTEM = 0x04
+TYPE_HEARTBEAT = 0xFF
 
 # Flag-Bits
-FLAG_LIFTOFF    = 0x01
-FLAG_SODS       = 0x02
-FLAG_SOEX       = 0x04
-FLAG_BURNOUT    = 0x08
-FLAG_APOGEE     = 0x10
-FLAG_PARACHUTE  = 0x20
+FLAG_LIFTOFF = 0x01
+FLAG_SODS = 0x02
+FLAG_SOEX = 0x04
+FLAG_BURNOUT = 0x08
+FLAG_APOGEE = 0x10
+FLAG_PARACHUTE = 0x20
 
 
 # ── Datenklassen ─────────────────────────────────────────────────────────────
 @dataclass
 class RexusHeader:
-    magic:        int
-    version:      int
-    sequence:     int
+    magic: int
+    version: int
+    sequence: int
     timestamp_ms: int
-    pkt_type:     int
-    flags:        int
-    crc16:        int
+    pkt_type: int
+    flags: int
+    crc16: int
 
     @property
     def type_name(self) -> str:
         """Gibt den Measurement-Typ als lesbaren String zurück (z.B. 'imu', 'system')."""
         return {
-            TYPE_IMU:         "imu",
+            TYPE_IMU: "imu",
             TYPE_ENVIRONMENT: "environment",
-            TYPE_SYSTEM:      "system",
-            TYPE_HEARTBEAT:   "heartbeat",
+            TYPE_SYSTEM: "system",
+            TYPE_HEARTBEAT: "heartbeat",
         }.get(self.pkt_type, f"unknown_0x{self.pkt_type:02X}")
 
     @property
@@ -141,11 +142,11 @@ class RexusHeader:
 
 @dataclass
 class RexusPacket:
-    header:  RexusHeader
-    fields:  dict = field(default_factory=dict)
+    header: RexusHeader
+    fields: dict = field(default_factory=dict)
     raw_payload: bytes = field(default_factory=bytes)
-    valid:   bool = True
-    error:   Optional[str] = None
+    valid: bool = True
+    error: str | None = None
 
 
 # ── CRC-16 / XModem ──────────────────────────────────────────────────────────
@@ -168,8 +169,12 @@ def _parse_imu(payload: bytes) -> dict:
     """6× float32: ax, ay, az [m/s²]  gx, gy, gz [°/s]"""
     ax, ay, az, gx, gy, gz = struct.unpack_from(">ffffff", payload)
     return {
-        "ax": round(ax, 4), "ay": round(ay, 4), "az": round(az, 4),
-        "gx": round(gx, 4), "gy": round(gy, 4), "gz": round(gz, 4),
+        "ax": round(ax, 4),
+        "ay": round(ay, 4),
+        "az": round(az, 4),
+        "gx": round(gx, 4),
+        "gy": round(gy, 4),
+        "gz": round(gz, 4),
     }
 
 
@@ -178,8 +183,8 @@ def _parse_environment(payload: bytes) -> dict:
     temp, pressure, humidity = struct.unpack_from(">fff", payload)
     return {
         "temperature": round(temp, 3),
-        "pressure":    round(pressure, 3),
-        "humidity":    round(humidity, 3),
+        "pressure": round(pressure, 3),
+        "humidity": round(humidity, 3),
     }
 
 
@@ -188,10 +193,10 @@ def _parse_system(payload: bytes) -> dict:
     uptime_s [s]"""
     cpu_temp, bat_v, bat_i, uptime = struct.unpack_from(">ffff", payload)
     return {
-        "cpu_temp":         round(cpu_temp, 2),
-        "battery_voltage":  round(bat_v, 3),
-        "battery_current":  round(bat_i, 3),
-        "uptime_s":         round(uptime, 1),
+        "cpu_temp": round(cpu_temp, 2),
+        "battery_voltage": round(bat_v, 3),
+        "battery_current": round(bat_i, 3),
+        "uptime_s": round(uptime, 1),
     }
 
 
@@ -202,10 +207,10 @@ def _parse_heartbeat(payload: bytes) -> dict:
 
 
 _PAYLOAD_PARSERS = {
-    TYPE_IMU:         _parse_imu,
+    TYPE_IMU: _parse_imu,
     TYPE_ENVIRONMENT: _parse_environment,
-    TYPE_SYSTEM:      _parse_system,
-    TYPE_HEARTBEAT:   _parse_heartbeat,
+    TYPE_SYSTEM: _parse_system,
+    TYPE_HEARTBEAT: _parse_heartbeat,
 }
 
 
@@ -217,8 +222,9 @@ def parse_packet(raw: bytes) -> RexusPacket:
     Bei Fehler ist packet.valid == False und packet.error enthält die Ursache.
     """
     if len(raw) < PACKET_SIZE:
-        empty = RexusHeader(magic=0, version=0, sequence=0,
-                            timestamp_ms=0, pkt_type=0, flags=0, crc16=0)
+        empty = RexusHeader(
+            magic=0, version=0, sequence=0, timestamp_ms=0, pkt_type=0, flags=0, crc16=0
+        )
         return RexusPacket(
             header=empty,
             valid=False,
@@ -226,9 +232,7 @@ def parse_packet(raw: bytes) -> RexusPacket:
         )
 
     # Header entpacken
-    magic, version, seq, ts_ms, pkt_type, flags, crc16 = struct.unpack_from(
-        HEADER_FORMAT, raw
-    )
+    magic, version, seq, ts_ms, pkt_type, flags, crc16 = struct.unpack_from(HEADER_FORMAT, raw)
 
     header = RexusHeader(
         magic=magic,
@@ -243,7 +247,8 @@ def parse_packet(raw: bytes) -> RexusPacket:
     # Magic prüfen
     if magic != MAGIC:
         return RexusPacket(
-            header=header, valid=False,
+            header=header,
+            valid=False,
             error=f"Ungültiges Magic: 0x{magic:04X} (erwartet 0x{MAGIC:04X})",
         )
 
@@ -252,21 +257,22 @@ def parse_packet(raw: bytes) -> RexusPacket:
     computed_crc = _crc16_xmodem(raw[:12] + raw[12:13] + raw[13:14])
     if computed_crc != crc16:
         return RexusPacket(
-            header=header, valid=False,
-            error=f"CRC-Fehler: berechnet 0x{computed_crc:04X}, "
-                  f"erwartet 0x{crc16:04X}",
+            header=header,
+            valid=False,
+            error=f"CRC-Fehler: berechnet 0x{computed_crc:04X}, " f"erwartet 0x{crc16:04X}",
         )
 
     # Payload parsen
-    payload = raw[HEADER_SIZE: HEADER_SIZE + PAYLOAD_SIZE]
-    parser  = _PAYLOAD_PARSERS.get(pkt_type)
+    payload = raw[HEADER_SIZE : HEADER_SIZE + PAYLOAD_SIZE]
+    parser = _PAYLOAD_PARSERS.get(pkt_type)
 
     if parser:
         try:
             fields = parser(payload)
         except struct.error as exc:
             return RexusPacket(
-                header=header, valid=False,
+                header=header,
+                valid=False,
                 error=f"Payload-Parse-Fehler: {exc}",
             )
         return RexusPacket(header=header, fields=fields, raw_payload=payload)
@@ -301,8 +307,12 @@ def build_packet(
     if pkt_type == TYPE_IMU:
         payload = struct.pack(
             ">ffffff",
-            payload_fields["ax"], payload_fields["ay"], payload_fields["az"],
-            payload_fields["gx"], payload_fields["gy"], payload_fields["gz"],
+            payload_fields["ax"],
+            payload_fields["ay"],
+            payload_fields["az"],
+            payload_fields["gx"],
+            payload_fields["gy"],
+            payload_fields["gz"],
         )
     elif pkt_type == TYPE_ENVIRONMENT:
         payload = struct.pack(
@@ -314,8 +324,10 @@ def build_packet(
     elif pkt_type == TYPE_SYSTEM:
         payload = struct.pack(
             ">ffff",
-            payload_fields["cpu_temp"], payload_fields["battery_voltage"],
-            payload_fields["battery_current"], payload_fields["uptime_s"],
+            payload_fields["cpu_temp"],
+            payload_fields["battery_voltage"],
+            payload_fields["battery_current"],
+            payload_fields["uptime_s"],
         )
     elif pkt_type == TYPE_HEARTBEAT:
         payload = struct.pack(">I", payload_fields["boot_count"])
@@ -323,19 +335,30 @@ def build_packet(
         raise ValueError(f"Unbekannter pkt_type: 0x{pkt_type:02X}")
 
     # Auf 48 Bytes padden
-    payload = payload.ljust(PAYLOAD_SIZE, b'\x00')
+    payload = payload.ljust(PAYLOAD_SIZE, b"\x00")
 
     # CRC über Header-Bytes 0..13 (ohne CRC-Feld und Padding)
     header_without_crc = struct.pack(
         ">HHIIBB",
-        MAGIC, PROTOCOL_VER, sequence, timestamp_ms, pkt_type, flags,
+        MAGIC,
+        PROTOCOL_VER,
+        sequence,
+        timestamp_ms,
+        pkt_type,
+        flags,
     )
     crc = _crc16_xmodem(header_without_crc)
 
     # Vollständigen Header bauen (16 Bytes)
     header = struct.pack(
         ">HHIIBBH",
-        MAGIC, PROTOCOL_VER, sequence, timestamp_ms, pkt_type, flags, crc,
+        MAGIC,
+        PROTOCOL_VER,
+        sequence,
+        timestamp_ms,
+        pkt_type,
+        flags,
+        crc,
     )
 
     return header + payload

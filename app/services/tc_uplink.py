@@ -30,11 +30,10 @@ from __future__ import annotations
 import logging
 import os
 import threading
-import time
-from typing import Optional
 
 try:
     import serial
+
     SERIAL_AVAILABLE = True
 except ImportError:  # pyserial optional
     serial = None
@@ -49,14 +48,14 @@ class TcUplink:
     """Serieller Telecommand-Sender zum RXSM (start/stop zur Laufzeit)."""
 
     def __init__(self) -> None:
-        self._ser: Optional["serial.Serial"] = None
+        self._ser: serial.Serial | None = None
         self._lock = threading.Lock()
         self._mcnt = 0
-        self._node: Optional[tuple] = None   # (st_rdev, st_ino) beim Öffnen
-        self._wanted = False                 # bewusst verbunden (nicht per stop() getrennt)
+        self._node: tuple | None = None  # (st_rdev, st_ino) beim Öffnen
+        self._wanted = False  # bewusst verbunden (nicht per stop() getrennt)
         self.port = ""
         self.baud = 38400
-        self.error: Optional[str] = None
+        self.error: str | None = None
 
     # -- Öffentliche API ----------------------------------------------------
     def start(self, port: str, baud: int) -> None:
@@ -121,24 +120,24 @@ class TcUplink:
                 # not configured). Der alte fd zeigt dann auf einen Device-Node,
                 # den es nicht mehr gibt. Einmal neu öffnen und wiederholen —
                 # der Downlink-Reader macht dasselbe über seinen Reconnect-Loop.
-                log.warning("TC-Write fehlgeschlagen (%s) — Port %s wird neu geöffnet",
-                            exc, self.port)
+                log.warning(
+                    "TC-Write fehlgeschlagen (%s) — Port %s wird neu geöffnet", exc, self.port
+                )
                 try:
                     self._open_locked()
                     self._write_locked(packet)
                 except (OSError, serial.SerialException, RuntimeError) as retry_exc:
                     self.error = str(retry_exc)
-                    raise RuntimeError(
-                        f"TC-Write fehlgeschlagen: {retry_exc}") from retry_exc
+                    raise RuntimeError(f"TC-Write fehlgeschlagen: {retry_exc}") from retry_exc
                 log.info("TC-Uplink nach Reconnect wieder gesendet (mcnt %d)", mcnt)
 
             self.error = None
 
         return {
-            "mcnt":     mcnt,
-            "dest":     dest,
+            "mcnt": mcnt,
+            "dest": dest,
             "sent_hex": packet.hex(),
-            "bytes":    len(packet),
+            "bytes": len(packet),
         }
 
     def snapshot(self) -> dict:
@@ -148,13 +147,13 @@ class TcUplink:
                 try:
                     self._ensure_open_locked()
                 except RuntimeError:
-                    pass   # Grund steht in self.error
+                    pass  # Grund steht in self.error
         return {
             "available": SERIAL_AVAILABLE,
             "connected": self.is_running(),
-            "port":      self.port,
-            "baud":      self.baud,
-            "error":     self.error,
+            "port": self.port,
+            "baud": self.baud,
+            "error": self.error,
         }
 
     # -- Intern -------------------------------------------------------------
@@ -186,7 +185,7 @@ class TcUplink:
         self._ser.write(packet)
         self._ser.flush()
 
-    def _stat_node(self) -> Optional[tuple]:
+    def _stat_node(self) -> tuple | None:
         """Identität des Device-Nodes (Gerät + Inode) — None, wenn es ihn nicht gibt."""
         try:
             st = os.stat(self.port)
@@ -238,8 +237,13 @@ def init_tc_uplink(app) -> None:
             # Typisch: Server startet, bevor der USB-Adapter da ist. Kein Problem -
             # der Port bleibt gewollt und wird beim ersten Senden bzw. bei der
             # naechsten Statusabfrage geoeffnet (siehe TcUplink.start).
-            log.warning("TC-Uplink noch nicht offen (%s) - wird automatisch "
-                        "verbunden, sobald der Adapter da ist.", exc)
+            log.warning(
+                "TC-Uplink noch nicht offen (%s) - wird automatisch "
+                "verbunden, sobald der Adapter da ist.",
+                exc,
+            )
     else:
-        log.info("TC-Uplink im Standby (kein Port konfiguriert — "
-                 "Port zur Laufzeit über /api/command/connect wählen)")
+        log.info(
+            "TC-Uplink im Standby (kein Port konfiguriert — "
+            "Port zur Laufzeit über /api/command/connect wählen)"
+        )

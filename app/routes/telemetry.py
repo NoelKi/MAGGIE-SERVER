@@ -1,6 +1,11 @@
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, jsonify, request
 
-from app.services.influx_service import write_telemetry, write_telemetry_batch, query_telemetry, ping_influx
+from app.services.influx_service import (
+    ping_influx,
+    query_telemetry,
+    write_telemetry,
+    write_telemetry_batch,
+)
 
 telemetry_bp = Blueprint("telemetry", __name__)
 
@@ -8,6 +13,7 @@ telemetry_bp = Blueprint("telemetry", __name__)
 # ──────────────────────────────────────────────────────────────────────────────
 # POST /api/telemetry  — Datenpunkt schreiben
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 @telemetry_bp.route("/telemetry", methods=["POST"])
 def ingest():
@@ -31,8 +37,8 @@ def ingest():
         return jsonify({"error": "JSON body required"}), 400
 
     measurement = body.get("measurement", "").strip()
-    fields      = body.get("fields")
-    tags        = body.get("tags")
+    fields = body.get("fields")
+    tags = body.get("tags")
 
     if not measurement:
         return jsonify({"error": "'measurement' is required"}), 400
@@ -50,6 +56,7 @@ def ingest():
 # ──────────────────────────────────────────────────────────────────────────────
 # GET /api/telemetry  — Datenpunkte abfragen
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 @telemetry_bp.route("/telemetry", methods=["GET"])
 def fetch():
@@ -72,7 +79,7 @@ def fetch():
 
     # "range" ist der vom Frontend genutzte Alias für "start".
     start = request.args.get("start") or request.args.get("range") or "-1h"
-    stop  = request.args.get("stop",  "now()")
+    stop = request.args.get("stop", "now()")
 
     try:
         limit = int(request.args.get("limit", 500))
@@ -81,8 +88,9 @@ def fetch():
 
     try:
         downsample = request.args.get("downsample", "0") in ("1", "true")
-        data = query_telemetry(measurement=measurement, start=start, stop=stop,
-                               limit=limit, downsample=downsample)
+        data = query_telemetry(
+            measurement=measurement, start=start, stop=stop, limit=limit, downsample=downsample
+        )
     except Exception as exc:  # noqa: BLE001
         return jsonify({"error": "InfluxDB query failed", "detail": str(exc)}), 502
 
@@ -92,6 +100,7 @@ def fetch():
 # ──────────────────────────────────────────────────────────────────────────────
 # GET /api/telemetry/ping  — InfluxDB erreichbar?
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 @telemetry_bp.route("/telemetry/ping", methods=["GET"])
 def influx_ping():
@@ -106,6 +115,7 @@ def influx_ping():
 # ──────────────────────────────────────────────────────────────────────────────
 # POST /api/telemetry/batch  — Mehrere Datenpunkte auf einmal schreiben
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 @telemetry_bp.route("/telemetry/batch", methods=["POST"])
 def ingest_batch():

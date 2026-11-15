@@ -1,4 +1,5 @@
 import os
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -6,6 +7,7 @@ load_dotenv()
 
 class Config:
     """Basis-Konfiguration."""
+
     SECRET_KEY = os.getenv("SECRET_KEY", "fallback-secret")
 
     # Muss hier stehen, nicht erst als Argument beim Server-Start: create_app()
@@ -16,14 +18,14 @@ class Config:
     DEBUG = os.getenv("FLASK_DEBUG", "true").lower() not in ("0", "false", "no")
 
     # ── InfluxDB ──────────────────────────────────────────────────────
-    INFLUX_URL    = os.getenv("INFLUX_URL", "http://localhost:8086")
-    INFLUX_TOKEN  = os.getenv("INFLUX_TOKEN", "")
-    INFLUX_ORG    = os.getenv("INFLUX_ORG", "MAGGIE")
+    INFLUX_URL = os.getenv("INFLUX_URL", "http://localhost:8086")
+    INFLUX_TOKEN = os.getenv("INFLUX_TOKEN", "")
+    INFLUX_ORG = os.getenv("INFLUX_ORG", "MAGGIE")
     INFLUX_BUCKET = os.getenv("INFLUX_BUCKET", "MAGGIE_DB")
 
     # ── OBC UDP-Interface ─────────────────────────────────────────────
-    UDP_HOST    = os.getenv("UDP_HOST", "0.0.0.0")
-    UDP_PORT    = int(os.getenv("UDP_PORT", "9000"))
+    UDP_HOST = os.getenv("UDP_HOST", "0.0.0.0")
+    UDP_PORT = int(os.getenv("UDP_PORT", "9000"))
     UDP_TIMEOUT = float(os.getenv("UDP_TIMEOUT", "2.0"))
 
     # ── RXSM Downlink (serieller Port) ────────────────────────────────
@@ -32,8 +34,10 @@ class Config:
     #   macOS:  /dev/tty.usbserial-XXXX
     #   Linux:  /dev/ttyUSB0
     #   Windows: COM3
-    SERIAL_PORT      = os.getenv("SERIAL_PORT", "")
-    SERIAL_BAUD      = int(os.getenv("SERIAL_BAUD", "38400"))   # RXSM: 38400 8N1, muss zu OBC rates::DOWNLINK_BAUDRATE passen
+    SERIAL_PORT = os.getenv("SERIAL_PORT", "")
+    SERIAL_BAUD = int(
+        os.getenv("SERIAL_BAUD", "38400")
+    )  # RXSM: 38400 8N1, muss zu OBC rates::DOWNLINK_BAUDRATE passen
     SERIAL_AUTOSTART = os.getenv("SERIAL_AUTOSTART", "true").lower() == "true"
     # Größe des In-Memory-Ringpuffers für den Live-Hexdump (Bytes)
     SERIAL_BUFFER_BYTES = int(os.getenv("SERIAL_BUFFER_BYTES", str(256 * 1024)))
@@ -44,6 +48,7 @@ class Config:
     # vom read-only Downlink oben. TC_SERIAL_PORT leer lassen → zur Laufzeit
     # über /api/command/connect wählen.
     TC_SERIAL_PORT = os.getenv("TC_SERIAL_PORT", "")
-    TC_SERIAL_BAUD = int(os.getenv("TC_SERIAL_BAUD", "38400"))   # gleicher Adapter wie SERIAL_BAUD im Bodenaufbau
-    TC_AUTOSTART   = os.getenv("TC_AUTOSTART", "true").lower() == "true"
-
+    TC_SERIAL_BAUD = int(
+        os.getenv("TC_SERIAL_BAUD", "38400")
+    )  # gleicher Adapter wie SERIAL_BAUD im Bodenaufbau
+    TC_AUTOSTART = os.getenv("TC_AUTOSTART", "true").lower() == "true"

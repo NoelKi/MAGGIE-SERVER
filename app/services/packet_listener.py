@@ -17,25 +17,26 @@ Verwendung:
   start_udp_listener(app)   # einmalig in create_app() aufrufen
 """
 
-import socket
 import logging
+import socket
 import threading
+
 from flask import Flask
 
 from app.extensions import socketio
+from app.services.influx_service import write_telemetry
+from app.services.obc_state import emit_flags, emit_state, obc_state
 from app.services.packet_parser import (
-    parse_packet,
+    PACKET_SIZE,
     TYPE_HEARTBEAT,
     TYPE_SYSTEM,
-    PACKET_SIZE,
+    parse_packet,
 )
-from app.services.influx_service import write_telemetry
-from app.services.obc_state import obc_state, emit_state, emit_flags
 
 log = logging.getLogger(__name__)
 
 # Singleton-Referenz — verhindert doppelten Thread-Start
-_listener_lock   = threading.Lock()
+_listener_lock = threading.Lock()
 _listener_thread: threading.Thread | None = None
 
 
@@ -55,14 +56,13 @@ def _udp_loop(app: Flask) -> None:
             log.error("UDP-Listener: Bind auf %s:%d fehlgeschlagen: %s", host, port, exc)
             return
 
-        log.info("UDP-Listener gestartet auf %s:%d (max. %d Bytes/Paket)",
-                 host, port, PACKET_SIZE)
+        log.info("UDP-Listener gestartet auf %s:%d (max. %d Bytes/Paket)", host, port, PACKET_SIZE)
 
         while True:
             try:
-                raw, addr = sock.recvfrom(256)   # 256 > 64 Bytes Paketgröße
-            except socket.timeout:
-                continue   # Kein Paket — normales Timeout, Loop weiter
+                raw, addr = sock.recvfrom(256)  # 256 > 64 Bytes Paketgröße
+            except TimeoutError:
+                continue  # Kein Paket — normales Timeout, Loop weiter
             except OSError:
                 log.warning("UDP-Listener: Socket-Fehler — beende Loop")
                 break
@@ -80,11 +80,16 @@ def _handle_packet(app: Flask, raw: bytes, addr: tuple) -> None:
 
     hdr = pkt.header
     measurement = hdr.type_name
-    phase       = hdr.flight_phase
+    phase = hdr.flight_phase
 
     log.debug(
         "Paket #%d | Type=%s | Phase=%s | ts=%dms | von %s:%d",
-        hdr.sequence, measurement, phase, hdr.timestamp_ms, addr[0], addr[1],
+        hdr.sequence,
+        measurement,
+        phase,
+        hdr.timestamp_ms,
+        addr[0],
+        addr[1],
     )
 
     # State-Store füttern — meldet, ob Flags/Phase/Online sich geändert haben
@@ -95,13 +100,19 @@ def _handle_packet(app: Flask, raw: bytes, addr: tuple) -> None:
         boot_count = pkt.fields.get("boot_count", -1)
         log.info(
             "HEARTBEAT von %s:%d | seq=%d boot_count=%d",
-            addr[0], addr[1], hdr.sequence, boot_count,
+            addr[0],
+            addr[1],
+            hdr.sequence,
+            boot_count,
         )
         obc_state.note_heartbeat(boot_count)
-        socketio.emit("obc:heartbeat", {
-            "seq":        hdr.sequence,
-            "boot_count": boot_count,
-        })
+        socketio.emit(
+            "obc:heartbeat",
+            {
+                "seq": hdr.sequence,
+                "boot_count": boot_count,
+            },
+        )
         _emit_state_if_changed(state_changed)
         return
 
@@ -112,34 +123,35 @@ def _handle_packet(app: Flask, raw: bytes, addr: tuple) -> None:
     # ── Live-Broadcast an die Ground Station ────────────────────────────
     # Vor dem InfluxDB-Write: eine langsame DB darf die GUI nicht ausbremsen.
     # Die Meta-Felder entsprechen dem GS-Interface TelemetryMeta.
-    socketio.emit(f"telemetry:{measurement}", {
-        **pkt.fields,
-        "_seq":   hdr.sequence,
-        "_ts":    hdr.timestamp_ms,
-        "_phase": phase,
-    })
+    socketio.emit(
+        f"telemetry:{measurement}",
+        {
+            **pkt.fields,
+            "_seq": hdr.sequence,
+            "_ts": hdr.timestamp_ms,
+            "_phase": phase,
+        },
+    )
     _emit_state_if_changed(state_changed)
 
     # Tags: Flugphase, Quelle-IP, Sequenznummer für Lücken-Erkennung
     tags = {
-        "phase":    phase,
-        "source":   addr[0],
-        "seq":      str(hdr.sequence),
+        "phase": phase,
+        "source": addr[0],
+        "seq": str(hdr.sequence),
     }
 
     # Extra-Feld: Zeitstempel seit Lift-off in ms
     fields = dict(pkt.fields)
     fields["timestamp_ms"] = hdr.timestamp_ms
-    fields["flags"]        = hdr.flags
+    fields["flags"] = hdr.flags
 
     # In InfluxDB schreiben — mit Flask-App-Kontext
     with app.app_context():
         try:
             write_telemetry(measurement, fields, tags)
         except (OSError, RuntimeError, ValueError) as exc:
-            log.error(
-                "InfluxDB-Schreibfehler für Paket #%d: %s", hdr.sequence, exc
-            )
+            log.error("InfluxDB-Schreibfehler für Paket #%d: %s", hdr.sequence, exc)
 
 
 def _emit_state_if_changed(changed: bool) -> None:
@@ -174,7 +186,7 @@ def start_udp_listener(app: Flask) -> None:
             target=_udp_loop,
             args=(app,),
             name="udp-obc-listener",
-            daemon=True,   # Thread stirbt mit dem Hauptprozess
+            daemon=True,  # Thread stirbt mit dem Hauptprozess
         )
         _listener_thread.start()
     log.info("UDP-OBC-Listener-Thread gestartet (daemon=True)")

@@ -29,18 +29,17 @@ Konfiguration (config/settings.py / .env):
 
 from __future__ import annotations
 
-import time
 import logging
 import threading
+import time
 from collections import deque
-from typing import Optional
 
 from app.services.downlink_frame_parser import (
-    FrameExtractor,
     DecodedStore,
     DownlinkFrame,
+    FrameExtractor,
 )
-from app.services.obc_state import obc_state, emit_state
+from app.services.obc_state import emit_state, obc_state
 
 log = logging.getLogger(__name__)
 
@@ -48,13 +47,13 @@ log = logging.getLogger(__name__)
 try:
     import serial
     from serial.tools import list_ports
+
     SERIAL_AVAILABLE = True
 except ImportError:  # pragma: no cover
-    serial = None            # type: ignore[assignment]
-    list_ports = None        # type: ignore[assignment]
+    serial = None  # type: ignore[assignment]
+    list_ports = None  # type: ignore[assignment]
     SERIAL_AVAILABLE = False
-    log.warning("pyserial nicht installiert — RXSM-Downlink deaktiviert "
-                "(pip install pyserial)")
+    log.warning("pyserial nicht installiert — RXSM-Downlink deaktiviert " "(pip install pyserial)")
 
 
 # ── Ringpuffer ────────────────────────────────────────────────────────────────
@@ -72,17 +71,17 @@ class DownlinkBuffer:
         self._lock = threading.Lock()
         self._buf = bytearray()
         self._capacity = max(capacity, 4096)
-        self._total = 0             # Cursor: Gesamtzahl empfangener Bytes
-        self._start = 0             # Cursor-Wert des ersten Bytes im Puffer
+        self._total = 0  # Cursor: Gesamtzahl empfangener Bytes
+        self._start = 0  # Cursor-Wert des ersten Bytes im Puffer
 
         # Gleitendes 1-s-Fenster für die Byte-Rate
         self._rx: deque[tuple[float, int]] = deque()
 
         # Vom Reader-Thread gesetzter Verbindungsstatus
         self.connected = False
-        self.port: Optional[str] = None
-        self.baud: Optional[int] = None
-        self.error: Optional[str] = None
+        self.port: str | None = None
+        self.baud: int | None = None
+        self.error: str | None = None
         self.last_rx: float = 0.0
 
     # -- Schreiben (Reader-Thread) ------------------------------------------
@@ -100,8 +99,9 @@ class DownlinkBuffer:
             self.last_rx = now
             self._rx.append((now, len(data)))
 
-    def set_status(self, connected: bool, port: Optional[str],
-                   baud: Optional[int], error: Optional[str]) -> None:
+    def set_status(
+        self, connected: bool, port: str | None, baud: int | None, error: str | None
+    ) -> None:
         with self._lock:
             self.connected = connected
             self.port = port
@@ -143,14 +143,14 @@ class DownlinkBuffer:
     def snapshot(self) -> dict:
         """Status-Snapshot für /api/downlink/status."""
         return {
-            "available":     SERIAL_AVAILABLE,
-            "connected":     self.connected,
-            "port":          self.port,
-            "baud":          self.baud,
-            "error":         self.error,
-            "total_bytes":   self._total,
+            "available": SERIAL_AVAILABLE,
+            "connected": self.connected,
+            "port": self.port,
+            "baud": self.baud,
+            "error": self.error,
+            "total_bytes": self._total,
             "bytes_per_sec": self.rate_bps(),
-            "last_rx":       self.last_rx or None,
+            "last_rx": self.last_rx or None,
         }
 
 
@@ -158,27 +158,27 @@ class DownlinkBuffer:
 class SerialDownlink:
     """Steuert den seriellen Reader-Thread (start/stop zur Laufzeit)."""
 
-    INFLUX_COOLDOWN_S = 5.0    # Pause nach fehlgeschlagenem InfluxDB-Write
-    FLUSH_S           = 0.2    # InfluxDB-Batch-Intervall (5 Writes/s statt 40)
-    MAX_PENDING       = 5000   # Sicherheitskappe für den Write-Puffer
+    INFLUX_COOLDOWN_S = 5.0  # Pause nach fehlgeschlagenem InfluxDB-Write
+    FLUSH_S = 0.2  # InfluxDB-Batch-Intervall (5 Writes/s statt 40)
+    MAX_PENDING = 5000  # Sicherheitskappe für den Write-Puffer
 
     def __init__(self, capacity: int = 256 * 1024) -> None:
         self.buffer = DownlinkBuffer(capacity)
-        self._thread: Optional[threading.Thread] = None
+        self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._lock = threading.Lock()
 
         # ── Frame-Decoding ────────────────────────────────────────────
-        self.app = None                     # Flask-App für InfluxDB-Writes
-        self.extractor = FrameExtractor()   # Byte-Strom → 20-Byte-Frames
-        self.decoded = DecodedStore()       # decodierte Frames für die GUI
-        self.decode_enabled = True          # OBC-Frames automatisch decodieren
-        self._influx_cooldown_until = 0.0   # Pause nach InfluxDB-Fehler
+        self.app = None  # Flask-App für InfluxDB-Writes
+        self.extractor = FrameExtractor()  # Byte-Strom → 20-Byte-Frames
+        self.decoded = DecodedStore()  # decodierte Frames für die GUI
+        self.decode_enabled = True  # OBC-Frames automatisch decodieren
+        self._influx_cooldown_until = 0.0  # Pause nach InfluxDB-Fehler
 
         # ── Gebündelte InfluxDB-Writes ────────────────────────────────
-        self._pending: list[dict] = []               # gesammelte Punkte
+        self._pending: list[dict] = []  # gesammelte Punkte
         self._pending_lock = threading.Lock()
-        self._flush_thread: Optional[threading.Thread] = None
+        self._flush_thread: threading.Thread | None = None
         self._flush_stop = threading.Event()
 
     # -- Öffentliche API ----------------------------------------------------
@@ -214,11 +214,13 @@ class SerialDownlink:
             return []
         ports = []
         for p in list_ports.comports():
-            ports.append({
-                "device":       p.device,
-                "description":  p.description or "",
-                "manufacturer": p.manufacturer or "",
-            })
+            ports.append(
+                {
+                    "device": p.device,
+                    "description": p.description or "",
+                    "manufacturer": p.manufacturer or "",
+                }
+            )
         return ports
 
     # -- Intern -------------------------------------------------------------
@@ -235,8 +237,7 @@ class SerialDownlink:
                 ser = serial.Serial(port, baud, timeout=0.2)
             except (OSError, serial.SerialException) as exc:
                 self.buffer.set_status(False, port, baud, str(exc))
-                log.warning("Serieller Port %s nicht offen: %s — Retry in 2 s",
-                            port, exc)
+                log.warning("Serieller Port %s nicht offen: %s — Retry in 2 s", port, exc)
                 stop.wait(2.0)
                 continue
 
@@ -245,9 +246,9 @@ class SerialDownlink:
             try:
                 while not stop.is_set():
                     waiting = ser.in_waiting
-                    data = ser.read(waiting or 1)   # blockt max. timeout
+                    data = ser.read(waiting or 1)  # blockt max. timeout
                     if data:
-                        self.buffer.append(data)     # Rohbytes (Hexdump)
+                        self.buffer.append(data)  # Rohbytes (Hexdump)
                         if self.decode_enabled:
                             for frame in self.extractor.feed(data):
                                 self._on_frame(frame)
@@ -261,7 +262,7 @@ class SerialDownlink:
                     pass
 
             if not stop.is_set():
-                stop.wait(1.0)   # kurz warten, dann Reconnect-Versuch
+                stop.wait(1.0)  # kurz warten, dann Reconnect-Versuch
 
     # -- Frame-Verarbeitung -------------------------------------------------
     def _on_frame(self, frame: DownlinkFrame) -> None:
@@ -281,14 +282,14 @@ class SerialDownlink:
         # seq als FELD (nicht Tag) → vermeidet unbegrenzte Serien-Kardinalität.
         point = {
             "measurement": measurement,
-            "tags":        {"source": "downlink", "type": frame.type_name},
-            "fields":      {**frame.fields, "seq": frame.counter, "obc_time_ms": frame.time_ms},
-            "time_ms":     int(time.time() * 1000),   # echter Per-Punkt-Zeitstempel
+            "tags": {"source": "downlink", "type": frame.type_name},
+            "fields": {**frame.fields, "seq": frame.counter, "obc_time_ms": frame.time_ms},
+            "time_ms": int(time.time() * 1000),  # echter Per-Punkt-Zeitstempel
         }
         with self._pending_lock:
             self._pending.append(point)
             if len(self._pending) > self.MAX_PENDING:
-                del self._pending[:len(self._pending) - self.MAX_PENDING]
+                del self._pending[: len(self._pending) - self.MAX_PENDING]
 
     def ensure_flush_thread(self) -> None:
         """Startet den Batch-Flush-Daemon (einmalig)."""
@@ -296,13 +297,16 @@ class SerialDownlink:
             return
         self._flush_stop.clear()
         self._flush_thread = threading.Thread(
-            target=self._flush_loop, name="downlink-influx-flush", daemon=True,
+            target=self._flush_loop,
+            name="downlink-influx-flush",
+            daemon=True,
         )
         self._flush_thread.start()
 
     def _flush_loop(self) -> None:
         """Schreibt die gepufferten Punkte periodisch als Batch nach InfluxDB."""
         from app.services.influx_service import write_telemetry_batch
+
         while not self._flush_stop.wait(self.FLUSH_S):
             with self._pending_lock:
                 if not self._pending:
@@ -318,13 +322,17 @@ class SerialDownlink:
                     write_telemetry_batch(batch)
             except Exception as exc:  # noqa: BLE001 — Flush-Thread niemals crashen lassen
                 self._influx_cooldown_until = time.time() + self.INFLUX_COOLDOWN_S
-                log.warning("InfluxDB-Batch-Write (%d Punkte) fehlgeschlagen (%ds Pause): %s",
-                            len(batch), self.INFLUX_COOLDOWN_S, exc)
+                log.warning(
+                    "InfluxDB-Batch-Write (%d Punkte) fehlgeschlagen (%ds Pause): %s",
+                    len(batch),
+                    self.INFLUX_COOLDOWN_S,
+                    exc,
+                )
 
     def decode_snapshot(self) -> dict:
         """Decode-Statistik für /api/downlink/status."""
         snap = self.decoded.snapshot()
-        snap["crc_errors"]   = self.extractor.crc_errors
+        snap["crc_errors"] = self.extractor.crc_errors
         snap["resync_bytes"] = self.extractor.resync_bytes
         return snap
 
@@ -339,11 +347,9 @@ def init_serial_listener(app) -> None:
 
     Einmalig in create_app() aufrufen.
     """
-    downlink.buffer._capacity = max(
-        int(app.config.get("SERIAL_BUFFER_BYTES", 256 * 1024)), 4096
-    )
-    downlink.app = app   # für InfluxDB-Writes decodierter Frames
-    downlink.ensure_flush_thread()   # gebündelte Writes (5/s statt 40/s)
+    downlink.buffer._capacity = max(int(app.config.get("SERIAL_BUFFER_BYTES", 256 * 1024)), 4096)
+    downlink.app = app  # für InfluxDB-Writes decodierter Frames
+    downlink.ensure_flush_thread()  # gebündelte Writes (5/s statt 40/s)
 
     if not SERIAL_AVAILABLE:
         return
@@ -358,5 +364,7 @@ def init_serial_listener(app) -> None:
         except RuntimeError as exc:
             log.warning("Serieller Autostart fehlgeschlagen: %s", exc)
     else:
-        log.info("Serieller Downlink im Standby (kein Port konfiguriert — "
-                 "Port zur Laufzeit über /api/downlink/connect wählen)")
+        log.info(
+            "Serieller Downlink im Standby (kein Port konfiguriert — "
+            "Port zur Laufzeit über /api/downlink/connect wählen)"
+        )

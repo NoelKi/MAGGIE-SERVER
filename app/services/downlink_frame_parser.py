@@ -56,55 +56,55 @@ Kraftvektor rechnet erst dieser Parser (siehe FORCE2_CELL_ANGLES_DEG).
 
 from __future__ import annotations
 
-import math
-import time
-import struct
 import logging
+import math
+import struct
+import time
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable, Optional
 
 log = logging.getLogger(__name__)
 
 # ── Protokoll-Konstanten (aus telemetry_hal.hpp) ────────────────────────────────
 FRAME_SIZE = 20
-DATA_SIZE  = 8
+DATA_SIZE = 8
 
 DL_START = 0x7E
-DL_END   = 0x7F
+DL_END = 0x7F
 
 # MSGID1 – Subsystem
-SUBSYS_IMU   = 0x01
+SUBSYS_IMU = 0x01
 SUBSYS_MOTOR = 0x02
-SUBSYS_SYS   = 0x03
+SUBSYS_SYS = 0x03
 SUBSYS_FORCE = 0x04
-SUBSYS_ARM   = 0x05   # Roboterarm, von der RCU durchgereicht
+SUBSYS_ARM = 0x05  # Roboterarm, von der RCU durchgereicht
 
 # MSGID2 – Nachrichtentyp (IMU-Subsystem)
 IMU_ACCEL = 0x01
-IMU_GYRO  = 0x02
+IMU_GYRO = 0x02
 
 # MSGID2 – Nachrichtentyp (MOTOR-Subsystem)
-MOTOR_STATE  = 0x01   # Motor 1
-MOTOR_STATE2 = 0x02   # Motor 2 (baugleich zu Motor 1)
+MOTOR_STATE = 0x01  # Motor 1
+MOTOR_STATE2 = 0x02  # Motor 2 (baugleich zu Motor 1)
 
 # MSGID2 – Nachrichtentyp (FORCE-Subsystem)
-FORCE_TARGET1 = 0x01   # 3 Zellen X/Y/Z
-FORCE_TARGET2 = 0x02   # 4 Zellen A/B/C/D (Eigenbau, 3× 120° + Z)
+FORCE_TARGET1 = 0x01  # 3 Zellen X/Y/Z
+FORCE_TARGET2 = 0x02  # 4 Zellen A/B/C/D (Eigenbau, 3× 120° + Z)
 
 # MSGID2 – Nachrichtentyp (SYS-Subsystem)
-SYS_STATE      = 0x01
-SYS_UPLINK     = 0x02
+SYS_STATE = 0x01
+SYS_UPLINK = 0x02
 SYS_UPLINK_RAW = 0x03
-SYS_ARM_LINK   = 0x04
-SYS_ARM_TRAJ   = 0x05
+SYS_ARM_LINK = 0x04
+SYS_ARM_TRAJ = 0x05
 
 # MSGID2 – ARM (DownlinkArmMsg)
-ARM_JOINT     = 0x01
-ARM_VOLTAGE   = 0x02
-ARM_TEMP      = 0x03
+ARM_JOINT = 0x01
+ARM_VOLTAGE = 0x02
+ARM_TEMP = 0x03
 ARM_RCU_ACCEL = 0x04
-ARM_RCU_GYRO  = 0x05
+ARM_RCU_GYRO = 0x05
 
 # SYS/ARM_LINK – STATUS2
 ARM_LINK_ALIVE = 0x01
@@ -116,14 +116,14 @@ SDC_EXPECTED_HEAD = [0xEB, 0x90, 0xA5, None, None, 0x7E, None, 0x00]
 
 # STATUS1-Bits
 STATUS1_SYSTEM_HEALTHY = 0x01
-STATUS1_IMU_VALID      = 0x02
+STATUS1_IMU_VALID = 0x02
 
 # MOTOR-STATE-Bits (DATA[6], identisch zu telemetry_hal.hpp)
 # Bit 4 war HDRM_CLOSED der frueheren Positionsregelung und ist mit ihr
 # entfallen. Bleibt reserviert.
-MOTOR_STATE_ON          = 0x01
-MOTOR_STATE_ENCODER_OK  = 0x02
-MOTOR_STATE_TURNING     = 0x04
+MOTOR_STATE_ON = 0x01
+MOTOR_STATE_ENCODER_OK = 0x02
+MOTOR_STATE_TURNING = 0x04
 MOTOR_STATE_TURN_FAILED = 0x08
 
 # FORCE-Flags (in STATUS2, identisch zu DL_FORCE_* in telemetry_hal.hpp).
@@ -135,16 +135,16 @@ FORCE_FLAG_TARED = 0x10
 FORCE_FLAG_STALE = 0x20
 
 # SYS-STATE-Subsystembits (DATA[1], identisch zu telemetry_hal.hpp)
-SUBSYS_BIT_IMU      = 0x01
-SUBSYS_BIT_MOTOR    = 0x02
+SUBSYS_BIT_IMU = 0x01
+SUBSYS_BIT_MOTOR = 0x02
 SUBSYS_BIT_DOWNLINK = 0x04
-SUBSYS_BIT_FORCE1   = 0x08
-SUBSYS_BIT_FORCE2   = 0x10
-SUBSYS_BIT_MOTOR2   = 0x20
+SUBSYS_BIT_FORCE1 = 0x08
+SUBSYS_BIT_FORCE2 = 0x10
+SUBSYS_BIT_MOTOR2 = 0x20
 
 # Rohe REXUS-Leitungspegel (DATA[6], identisch zu DL_REXUS_* in rexus_hal.hpp)
-REXUS_BIT_L0   = 0x01
-REXUS_BIT_SOE  = 0x02
+REXUS_BIT_L0 = 0x01
+REXUS_BIT_SOE = 0x02
 REXUS_BIT_SODS = 0x04
 
 # Aktiv-Pegel der REXUS-Startsignale — identisch zu REXUS_ACTIVE_HIGH in
@@ -173,12 +173,12 @@ MISSION_STATES = {
 # Am Aufbau bestaetigt; deckt sich mit 12 CPR x 380:1 Getriebe = 4550.
 # Muss mit MAGGIE_OBC/include/hal/motor_hal.hpp uebereinstimmen — dort haengt
 # ausserdem der Zielwert von MOTOR_TURN daran.
-MOTOR_COUNTS_PER_REV = 4550   # Encoder-Counts pro voller Umdrehung
-MOTOR_DEG_PER_COUNT  = 360.0 / MOTOR_COUNTS_PER_REV
+MOTOR_COUNTS_PER_REV = 4550  # Encoder-Counts pro voller Umdrehung
+MOTOR_DEG_PER_COUNT = 360.0 / MOTOR_COUNTS_PER_REV
 
 # Skalierungsfaktoren (identisch zur OBC-Firmware imu_hal.cpp)
-ACCEL_SCALE = 9.80665 / 10920.0    # int16-Count → m/s²
-GYRO_SCALE  = 1.0 / 65.536         # int16-Count → °/s
+ACCEL_SCALE = 9.80665 / 10920.0  # int16-Count → m/s²
+GYRO_SCALE = 1.0 / 65.536  # int16-Count → °/s
 
 # ── Roboterarm (LISA-RCU) ──────────────────────────────────────────────────────
 # Identisch zu MAGGIE_OBC/extern/lisa-if/lisa/protocol.py (RCU_*_SCALE): rohe
@@ -222,8 +222,8 @@ _G_TO_N = 9.80665 / 1000.0
 # MAGGIE_OBC/src/hardwareTest/force.cpp und eine Schaetzung. Die '*_counts'-
 # Felder im Decoder sind davon unabhaengig und damit der belastbare Wert —
 # analog zu 'position' beim Motor.
-FORCE1_COUNTS_PER_GRAM = (26.0, 26.0, 26.0)              # X, Y, Z
-FORCE2_COUNTS_PER_GRAM = (26.0, 26.0, 26.0, 26.0)        # A, B, C, D
+FORCE1_COUNTS_PER_GRAM = (26.0, 26.0, 26.0)  # X, Y, Z
+FORCE2_COUNTS_PER_GRAM = (26.0, 26.0, 26.0, 26.0)  # A, B, C, D
 
 # ── Kraftsensor 2: Geometrie des Eigenbaus ─────────────────────────────────────
 #
@@ -261,33 +261,32 @@ FORCE2_COUNTS_PER_GRAM = (26.0, 26.0, 26.0, 26.0)        # A, B, C, D
 # X-Achse, gehoert der Versatz hier addiert. Pruefen laesst sich das mit einer
 # bekannten Last aus einer bekannten Richtung — force2_dir_deg muss dann diese
 # Richtung anzeigen.
-FORCE2_CELL_ANGLES_DEG = (0.0, 120.0, 240.0)   # A, B, C in der XY-Ebene
+FORCE2_CELL_ANGLES_DEG = (0.0, 120.0, 240.0)  # A, B, C in der XY-Ebene
 
 # Vorberechnete Clarke-Koeffizienten (cos, sin) je radialer Zelle.
 FORCE2_CLARKE = tuple(
-    (math.cos(math.radians(a)), math.sin(math.radians(a)))
-    for a in FORCE2_CELL_ANGLES_DEG
+    (math.cos(math.radians(a)), math.sin(math.radians(a))) for a in FORCE2_CELL_ANGLES_DEG
 )
 
 
 # ── Datenklasse ─────────────────────────────────────────────────────────────────
 @dataclass
 class DownlinkFrame:
-    msgid1:   int
-    msgid2:   int
-    ack:      int
-    counter:  int
-    time_ms:  int
-    status1:  int
-    status2:  int
-    crc:      int
-    data:     bytes
-    fields:   dict = field(default_factory=dict)   # decodierte, skalierte Werte
-    valid:    bool = True
-    error:    Optional[str] = None
+    msgid1: int
+    msgid2: int
+    ack: int
+    counter: int
+    time_ms: int
+    status1: int
+    status2: int
+    crc: int
+    data: bytes
+    fields: dict = field(default_factory=dict)  # decodierte, skalierte Werte
+    valid: bool = True
+    error: str | None = None
 
     @property
-    def _mtype(self) -> "Optional[MessageType]":
+    def _mtype(self) -> MessageType | None:
         return MESSAGE_TYPES.get((self.msgid1, self.msgid2))
 
     @property
@@ -301,7 +300,7 @@ class DownlinkFrame:
         return mt.name if mt else f"0x{self.msgid2:02X}"
 
     @property
-    def measurement(self) -> Optional[str]:
+    def measurement(self) -> str | None:
         """InfluxDB-Measurement — None wenn der Typ nicht registriert ist."""
         mt = self._mtype
         return mt.measurement if mt else None
@@ -317,18 +316,18 @@ class DownlinkFrame:
     def to_dict(self) -> dict:
         """JSON-freundliche Repräsentation für die GUI."""
         return {
-            "counter":        self.counter,
-            "time_ms":        self.time_ms,
-            "subsystem":      self.subsystem_name,
-            "type":           self.type_name,
-            "measurement":    self.measurement,
-            "ack":            self.ack,
-            "status1":        self.status1,
-            "status2":        self.status2,
+            "counter": self.counter,
+            "time_ms": self.time_ms,
+            "subsystem": self.subsystem_name,
+            "type": self.type_name,
+            "measurement": self.measurement,
+            "ack": self.ack,
+            "status1": self.status1,
+            "status2": self.status2,
             "system_healthy": self.system_healthy,
-            "imu_valid":      self.imu_valid,
-            "crc":            self.crc,
-            "fields":         self.fields,
+            "imu_valid": self.imu_valid,
+            "crc": self.crc,
+            "fields": self.fields,
         }
 
 
@@ -359,18 +358,19 @@ Decoder = Callable[[bytes, int], dict]
 
 @dataclass(frozen=True)
 class MessageType:
-    subsystem:   str          # Kategorie-Name, z.B. "imu"
-    name:        str          # Typ-Name, z.B. "accel"
-    measurement: str          # InfluxDB-Measurement, z.B. "imu"
-    decoder:     Decoder      # DATA-Bytes → skalierte Felder
+    subsystem: str  # Kategorie-Name, z.B. "imu"
+    name: str  # Typ-Name, z.B. "accel"
+    measurement: str  # InfluxDB-Measurement, z.B. "imu"
+    decoder: Decoder  # DATA-Bytes → skalierte Felder
 
 
 # (MSGID1, MSGID2) → MessageType
 MESSAGE_TYPES: dict[tuple[int, int], MessageType] = {}
 
 
-def register_message(msgid1: int, msgid2: int, subsystem: str, name: str,
-                     measurement: str, decoder: Decoder) -> None:
+def register_message(
+    msgid1: int, msgid2: int, subsystem: str, name: str, measurement: str, decoder: Decoder
+) -> None:
     """Registriert einen Downlink-Nachrichtentyp. Beim Import einmalig aufrufen."""
     MESSAGE_TYPES[(msgid1, msgid2)] = MessageType(subsystem, name, measurement, decoder)
 
@@ -400,13 +400,13 @@ def _motor_fields(data: bytes, status2: int, prefix: str) -> dict:
     # 'pwm' = vorzeichenbehafteter PWM-Wert (-255..255).
     position, pwm, state, _spare = struct.unpack_from(">ihBB", data)
     return {
-        f"{prefix}position":    position,   # rohe Encoder-Counts, der belastbare Wert
+        f"{prefix}position": position,  # rohe Encoder-Counts, der belastbare Wert
         f"{prefix}revolutions": round(position / MOTOR_COUNTS_PER_REV, 4),
-        f"{prefix}angle_deg":   round(position * MOTOR_DEG_PER_COUNT, 2),
-        f"{prefix}pwm":         pwm,
-        f"{prefix}on":          bool(state & MOTOR_STATE_ON),
-        f"{prefix}encoder_ok":  bool(state & MOTOR_STATE_ENCODER_OK),
-        f"{prefix}turning":     bool(state & MOTOR_STATE_TURNING),
+        f"{prefix}angle_deg": round(position * MOTOR_DEG_PER_COUNT, 2),
+        f"{prefix}pwm": pwm,
+        f"{prefix}on": bool(state & MOTOR_STATE_ON),
+        f"{prefix}encoder_ok": bool(state & MOTOR_STATE_ENCODER_OK),
+        f"{prefix}turning": bool(state & MOTOR_STATE_TURNING),
         f"{prefix}turn_failed": bool(state & MOTOR_STATE_TURN_FAILED),
     }
 
@@ -428,8 +428,9 @@ def _decode_motor2(data: bytes, status2: int) -> dict:
     return _motor_fields(data, status2, "motor2_")
 
 
-def _force_channels(data: bytes, status2: int, count: int,
-                    counts_per_gram: tuple, tele_div: int) -> tuple[list[int], list[float], dict]:
+def _force_channels(
+    data: bytes, status2: int, count: int, counts_per_gram: tuple, tele_div: int
+) -> tuple[list[int], list[float], dict]:
     """
     Gemeinsame Vorarbeit beider FORCE-Typen.
 
@@ -454,7 +455,9 @@ def _force_channels(data: bytes, status2: int, count: int,
 
 def _decode_force(data: bytes, status2: int) -> dict:
     """FORCE/TARGET1 — drei Zellen X/Y/Z, keine Verrechnung noetig."""
-    counts, newton, flags = _force_channels(data, status2, 3, FORCE1_COUNTS_PER_GRAM, FORCE1_TELE_DIV)
+    counts, newton, flags = _force_channels(
+        data, status2, 3, FORCE1_COUNTS_PER_GRAM, FORCE1_TELE_DIV
+    )
     axes = ("x", "y", "z")
 
     out = {}
@@ -481,7 +484,9 @@ def _decode_force2(data: bytes, status2: int) -> dict:
     Kraftvektor entsteht ERST HIER (Clarke-Transformation, siehe
     FORCE2_CELL_ANGLES_DEG) — der OBC funkt bewusst nur die Rohkanaele.
     """
-    counts, newton, flags = _force_channels(data, status2, 4, FORCE2_COUNTS_PER_GRAM, FORCE2_TELE_DIV)
+    counts, newton, flags = _force_channels(
+        data, status2, 4, FORCE2_COUNTS_PER_GRAM, FORCE2_TELE_DIV
+    )
     cells = ("a", "b", "c", "d")
 
     out = {}
@@ -495,7 +500,7 @@ def _decode_force2(data: bytes, status2: int) -> dict:
     # herauskommt.
     fx = (2.0 / 3.0) * sum(newton[i] * FORCE2_CLARKE[i][0] for i in range(3))
     fy = (2.0 / 3.0) * sum(newton[i] * FORCE2_CLARKE[i][1] for i in range(3))
-    fz = newton[3]                      # haengt direkt am Element, keine Rechnung
+    fz = newton[3]  # haengt direkt am Element, keine Rechnung
 
     out["force2_x"] = round(fx, 4)
     out["force2_y"] = round(fy, 4)
@@ -520,8 +525,8 @@ def _decode_sys(data: bytes, status2: int) -> dict:
     state, subsys, uptime_ms = struct.unpack_from(">BBI", data)
     rexus = data[6] if len(data) > 6 else 0
 
-    raw_l0   = bool(rexus & REXUS_BIT_L0)
-    raw_soe  = bool(rexus & REXUS_BIT_SOE)
+    raw_l0 = bool(rexus & REXUS_BIT_L0)
+    raw_soe = bool(rexus & REXUS_BIT_SOE)
     raw_sods = bool(rexus & REXUS_BIT_SODS)
 
     # asserted = Signal liegt WIRKLICH an, unabhaengig vom Leitungspegel.
@@ -529,37 +534,39 @@ def _decode_sys(data: bytes, status2: int) -> dict:
         return raw if REXUS_ACTIVE_HIGH else not raw
 
     return {
-        "state":        state,
-        "state_name":   MISSION_STATES.get(state, f"UNKNOWN_{state}"),
-        "uptime_s":     round(uptime_ms / 1000.0, 1),
-        "imu_ok":       bool(subsys & SUBSYS_BIT_IMU),
-        "motor_ok":     bool(subsys & SUBSYS_BIT_MOTOR),
-        "downlink_ok":  bool(subsys & SUBSYS_BIT_DOWNLINK),
-        "force1_ok":    bool(subsys & SUBSYS_BIT_FORCE1),
-        "force2_ok":    bool(subsys & SUBSYS_BIT_FORCE2),
-        "motor2_ok":    bool(subsys & SUBSYS_BIT_MOTOR2),
+        "state": state,
+        "state_name": MISSION_STATES.get(state, f"UNKNOWN_{state}"),
+        "uptime_s": round(uptime_ms / 1000.0, 1),
+        "imu_ok": bool(subsys & SUBSYS_BIT_IMU),
+        "motor_ok": bool(subsys & SUBSYS_BIT_MOTOR),
+        "downlink_ok": bool(subsys & SUBSYS_BIT_DOWNLINK),
+        "force1_ok": bool(subsys & SUBSYS_BIT_FORCE1),
+        "force2_ok": bool(subsys & SUBSYS_BIT_FORCE2),
+        "motor2_ok": bool(subsys & SUBSYS_BIT_MOTOR2),
         # Rohe REXUS-Leitungspegel (nicht entprellt), siehe DL_REXUS_* im OBC.
         # Der OBC wertet sie derzeit nicht aus - sie dienen nur der Pruefung der
         # Verkabelung am Bodenaufbau.
-        "rexus_l0":     raw_l0,
-        "rexus_soe":    raw_soe,
-        "rexus_sods":   raw_sods,
+        "rexus_l0": raw_l0,
+        "rexus_soe": raw_soe,
+        "rexus_sods": raw_sods,
         # Interpretierte Startsignale fuer die GUI-Anzeige "aktiv/inaktiv" —
         # bereits um REXUS_ACTIVE_HIGH korrigiert (siehe oben).
         # L0 = Lift-Off, SOE = Start Of Experiment, SODS = Start Of Data Storage.
-        "l0_active":    _asserted(raw_l0),
-        "soe_active":   _asserted(raw_soe),
-        "sods_active":  _asserted(raw_sods),
+        "l0_active": _asserted(raw_l0),
+        "soe_active": _asserted(raw_soe),
+        "sods_active": _asserted(raw_sods),
     }
 
 
 # ── Registrierte Nachrichtentypen ─────────────────────────────────────────────────
 register_message(SUBSYS_IMU, IMU_ACCEL, "imu", "accel", "imu", _decode_imu_accel)
-register_message(SUBSYS_IMU, IMU_GYRO,  "imu", "gyro",  "imu", _decode_imu_gyro)
-register_message(SUBSYS_MOTOR, MOTOR_STATE,  "motor", "state",  "motor",  _decode_motor)
+register_message(SUBSYS_IMU, IMU_GYRO, "imu", "gyro", "imu", _decode_imu_gyro)
+register_message(SUBSYS_MOTOR, MOTOR_STATE, "motor", "state", "motor", _decode_motor)
 register_message(SUBSYS_MOTOR, MOTOR_STATE2, "motor", "state2", "motor2", _decode_motor2)
 register_message(SUBSYS_FORCE, FORCE_TARGET1, "force", "target1", "force", _decode_force)
 register_message(SUBSYS_FORCE, FORCE_TARGET2, "force", "target2", "force2", _decode_force2)
+
+
 def _decode_sys_uplink(data: bytes, status2: int) -> dict:
     # DATA: [rx_bytes(uint16 BE) frames_ok(uint16 BE) frames_bad(uint16 BE)
     #        last_opcode(uint8) spare]
@@ -569,9 +576,9 @@ def _decode_sys_uplink(data: bytes, status2: int) -> dict:
         # rx_bytes zaehlt JEDES Byte am RX-Pin, auch die RXSM-Huelle vor dem
         # eigentlichen Command-Frame. Bleibt der Wert beim Senden eines
         # Telecommands stehen, erreicht es die UART gar nicht erst.
-        "uplink_rx_bytes":    rx_bytes,
-        "uplink_frames_ok":   frames_ok,
-        "uplink_frames_bad":  frames_bad,
+        "uplink_rx_bytes": rx_bytes,
+        "uplink_frames_ok": frames_ok,
+        "uplink_frames_bad": frames_bad,
         "uplink_last_opcode": None if last_opcode == 0xFF else last_opcode,
     }
 
@@ -586,21 +593,19 @@ def _decode_sys_uplink_raw(data: bytes, status2: int) -> dict:
     raw = list(data[:length])
 
     # Diagnose 1: passt der Kopf zum erwarteten SDC-Paket?
-    head_ok = all(exp is None or got == exp
-                  for got, exp in zip(raw, SDC_EXPECTED_HEAD))
+    head_ok = all(exp is None or got == exp for got, exp in zip(raw, SDC_EXPECTED_HEAD, strict=False))
 
     # Diagnose 2: sind die Bytes bitweise invertiert? Klassisch bei einer
     # RS-232-Strecke, deren Invertierung in einer Richtung nicht aufgehoben wird.
     inverted = [b ^ 0xFF for b in raw]
-    inverted_ok = all(exp is None or got == exp
-                      for got, exp in zip(inverted, SDC_EXPECTED_HEAD))
+    inverted_ok = all(exp is None or got == exp for got, exp in zip(inverted, SDC_EXPECTED_HEAD, strict=False))
 
     return {
-        "uplink_raw_hex":       " ".join(f"{b:02X}" for b in raw),
-        "uplink_raw_len":       length,
-        "uplink_raw_head_ok":   head_ok,
-        "uplink_raw_inverted":  inverted_ok,
-        "uplink_raw_inv_hex":   " ".join(f"{b:02X}" for b in inverted),
+        "uplink_raw_hex": " ".join(f"{b:02X}" for b in raw),
+        "uplink_raw_len": length,
+        "uplink_raw_head_ok": head_ok,
+        "uplink_raw_inverted": inverted_ok,
+        "uplink_raw_inv_hex": " ".join(f"{b:02X}" for b in inverted),
     }
 
 
@@ -610,16 +615,17 @@ def _decode_sys_uplink_raw(data: bytes, status2: int) -> dict:
 # Measurement "arm" und in denselben Live-Werten der GUI, ohne sich zu
 # überschreiben — analog zu motor2_/force2_.
 
+
 def _decode_arm_joint(data: bytes, status2: int) -> dict:
     # DATA: [node state angle_urad(int32 BE) 0 0]
     node, state, angle_urad = struct.unpack_from(">BBi", data)
     p = f"arm_j{node}_"
     return {
-        "arm_node":         node,
+        "arm_node": node,
         # Bitbelegung laut ICD nur "SM phase + reference source" — roh lassen.
-        f"{p}state":        state,
-        f"{p}angle_urad":   angle_urad,
-        f"{p}angle_deg":    round(angle_urad * _URAD_TO_DEG, 3),
+        f"{p}state": state,
+        f"{p}angle_urad": angle_urad,
+        f"{p}angle_deg": round(angle_urad * _URAD_TO_DEG, 3),
     }
 
 
@@ -628,9 +634,9 @@ def _decode_arm_voltage(data: bytes, status2: int) -> dict:
     node, _pad, bus_mv, stepper_mv = struct.unpack_from(">BBHH", data)
     p = f"arm_j{node}_"
     return {
-        "arm_node":        node,
-        f"{p}bus_v":       round(bus_mv / 1000.0, 3),
-        f"{p}stepper_v":   round(stepper_mv / 1000.0, 3),
+        "arm_node": node,
+        f"{p}bus_v": round(bus_mv / 1000.0, 3),
+        f"{p}stepper_v": round(stepper_mv / 1000.0, 3),
     }
 
 
@@ -639,9 +645,9 @@ def _decode_arm_temp(data: bytes, status2: int) -> dict:
     node, _pad, mcu, imu = struct.unpack_from(">BBhh", data)
     p = f"arm_j{node}_"
     return {
-        "arm_node":        node,
-        f"{p}mcu_temp_c":  round(mcu / ARM_TEMP_DIV, 2),
-        f"{p}imu_temp_c":  round(imu / ARM_TEMP_DIV, 2),
+        "arm_node": node,
+        f"{p}mcu_temp_c": round(mcu / ARM_TEMP_DIV, 2),
+        f"{p}imu_temp_c": round(imu / ARM_TEMP_DIV, 2),
     }
 
 
@@ -666,20 +672,21 @@ def _decode_arm_rcu_gyro(data: bytes, status2: int) -> dict:
 def _decode_sys_arm_link(data: bytes, status2: int) -> dict:
     # DATA: [frames_ok(uint16 BE) frames_bad(uint16 BE) last_msg last_node
     #        silence(uint8, 0,1 s) freefall_count]
-    frames_ok, frames_bad, last_msg, last_node, silence, freefall = \
-        struct.unpack_from(">HHBBBB", data)
+    frames_ok, frames_bad, last_msg, last_node, silence, freefall = struct.unpack_from(
+        ">HHBBBB", data
+    )
     return {
         # frames_ok bleibt 0: RCU antwortet gar nicht (Kabel, Strom, Baudrate).
         # frames_bad steigt, frames_ok nicht: Bytes kommen an, aber falsch —
         # meist eine falsche Baudrate (ARM_BAUDRATE in data_rates.hpp).
-        "arm_link_alive":      bool(status2 & ARM_LINK_ALIVE),
-        "arm_link_frames_ok":  frames_ok,
+        "arm_link_alive": bool(status2 & ARM_LINK_ALIVE),
+        "arm_link_frames_ok": frames_ok,
         "arm_link_frames_bad": frames_bad,
-        "arm_link_last_msg":   last_msg if frames_ok else None,
-        "arm_link_last_node":  last_node if frames_ok else None,
+        "arm_link_last_msg": last_msg if frames_ok else None,
+        "arm_link_last_node": last_node if frames_ok else None,
         # 255 = ≥ 25,5 s oder noch nie ein Frame
-        "arm_link_silence_s":  None if silence == 0xFF else round(silence / 10.0, 1),
-        "arm_freefall_count":  freefall,
+        "arm_link_silence_s": None if silence == 0xFF else round(silence / 10.0, 1),
+        "arm_freefall_count": freefall,
     }
 
 
@@ -687,16 +694,16 @@ def _decode_sys_arm_link(data: bytes, status2: int) -> dict:
 # Werte müssen zu ArmTrajPlayer::Phase / ::Result passen.
 ARM_TRAJ_PHASES = {0: "IDLE", 1: "SETTLE", 2: "RUN", 3: "FINISH"}
 ARM_TRAJ_RESULTS = {
-    0: "NONE",            # seit dem Booten nicht gestartet
+    0: "NONE",  # seit dem Booten nicht gestartet
     1: "RUNNING",
-    2: "DONE",            # fertig, alle Gelenke am Startwinkel
-    3: "SETTLE_MOVED",    # bewegt sich beim Halten (Bezug MOVE_ABS)
-    4: "NO_STATE",        # keine JOINT_STATE mehr
-    5: "TRACK_ERROR",     # Schleppfehler zu groß
+    2: "DONE",  # fertig, alle Gelenke am Startwinkel
+    3: "SETTLE_MOVED",  # bewegt sich beim Halten (Bezug MOVE_ABS)
+    4: "NO_STATE",  # keine JOINT_STATE mehr
+    5: "TRACK_ERROR",  # Schleppfehler zu groß
     6: "TX_FULL",
     7: "FINISH_TIMEOUT",  # Startwinkel nicht erreicht
-    8: "CANCELLED",       # STOP/INHIBIT, TEST verlassen, ABORT
-    9: "REFUSED",         # Start abgelehnt (Tabelle, Gelenk, Link)
+    8: "CANCELLED",  # STOP/INHIBIT, TEST verlassen, ABORT
+    9: "REFUSED",  # Start abgelehnt (Tabelle, Gelenk, Link)
 }
 
 
@@ -704,32 +711,29 @@ def _decode_sys_arm_traj(data: bytes, status2: int) -> dict:
     # DATA: [phase result node step(uint16 BE) max_err(uint16 BE, 0,01°) runs]
     phase, result, node, step, max_err, runs = struct.unpack_from(">BBBHHB", data)
     return {
-        "arm_traj_phase":       phase,
-        "arm_traj_phase_name":  ARM_TRAJ_PHASES.get(phase, f"0x{phase:02X}"),
-        "arm_traj_result":      result,
+        "arm_traj_phase": phase,
+        "arm_traj_phase_name": ARM_TRAJ_PHASES.get(phase, f"0x{phase:02X}"),
+        "arm_traj_result": result,
         "arm_traj_result_name": ARM_TRAJ_RESULTS.get(result, f"0x{result:02X}"),
-        "arm_traj_node":        node or None,
-        "arm_traj_step":        step,
-        "arm_traj_t_s":         round(step * 0.1, 1),
+        "arm_traj_node": node or None,
+        "arm_traj_step": step,
+        "arm_traj_t_s": round(step * 0.1, 1),
         "arm_traj_max_err_deg": round(max_err / 100.0, 2),
-        "arm_traj_runs":        runs,
+        "arm_traj_runs": runs,
     }
 
 
-register_message(SUBSYS_ARM, ARM_JOINT,     "arm", "joint",     "arm", _decode_arm_joint)
-register_message(SUBSYS_ARM, ARM_VOLTAGE,   "arm", "voltage",   "arm", _decode_arm_voltage)
-register_message(SUBSYS_ARM, ARM_TEMP,      "arm", "temp",      "arm", _decode_arm_temp)
+register_message(SUBSYS_ARM, ARM_JOINT, "arm", "joint", "arm", _decode_arm_joint)
+register_message(SUBSYS_ARM, ARM_VOLTAGE, "arm", "voltage", "arm", _decode_arm_voltage)
+register_message(SUBSYS_ARM, ARM_TEMP, "arm", "temp", "arm", _decode_arm_temp)
 register_message(SUBSYS_ARM, ARM_RCU_ACCEL, "arm", "rcu_accel", "arm", _decode_arm_rcu_accel)
-register_message(SUBSYS_ARM, ARM_RCU_GYRO,  "arm", "rcu_gyro",  "arm", _decode_arm_rcu_gyro)
+register_message(SUBSYS_ARM, ARM_RCU_GYRO, "arm", "rcu_gyro", "arm", _decode_arm_rcu_gyro)
 
 register_message(SUBSYS_SYS, SYS_STATE, "sys", "state", "obc", _decode_sys)
 register_message(SUBSYS_SYS, SYS_UPLINK, "sys", "uplink", "obc", _decode_sys_uplink)
-register_message(SUBSYS_SYS, SYS_UPLINK_RAW, "sys", "uplink_raw", "obc",
-                 _decode_sys_uplink_raw)
-register_message(SUBSYS_SYS, SYS_ARM_LINK, "sys", "arm_link", "obc",
-                 _decode_sys_arm_link)
-register_message(SUBSYS_SYS, SYS_ARM_TRAJ, "sys", "arm_traj", "obc",
-                 _decode_sys_arm_traj)
+register_message(SUBSYS_SYS, SYS_UPLINK_RAW, "sys", "uplink_raw", "obc", _decode_sys_uplink_raw)
+register_message(SUBSYS_SYS, SYS_ARM_LINK, "sys", "arm_link", "obc", _decode_sys_arm_link)
+register_message(SUBSYS_SYS, SYS_ARM_TRAJ, "sys", "arm_traj", "obc", _decode_sys_arm_traj)
 
 # NEUEN WERT HINZUFÜGEN — dreimal etwas, sonst nichts. Kraftsensor 1 oben ist
 # das gelebte Beispiel:
@@ -759,11 +763,20 @@ def parse_frame(raw: bytes) -> DownlinkFrame:
 
     Prüft START-/END-Marker und CRC-8.
     """
+
     def _bad(error: str, **kw) -> DownlinkFrame:
         return DownlinkFrame(
-            msgid1=kw.get("msgid1", 0), msgid2=kw.get("msgid2", 0), ack=0,
-            counter=0, time_ms=0, status1=0, status2=0, crc=0, data=b"",
-            valid=False, error=error,
+            msgid1=kw.get("msgid1", 0),
+            msgid2=kw.get("msgid2", 0),
+            ack=0,
+            counter=0,
+            time_ms=0,
+            status1=0,
+            status2=0,
+            crc=0,
+            data=b"",
+            valid=False,
+            error=error,
         )
 
     if len(raw) != FRAME_SIZE:
@@ -774,23 +787,28 @@ def parse_frame(raw: bytes) -> DownlinkFrame:
         return _bad(f"END falsch: 0x{raw[19]:02X}")
 
     msgid1, msgid2, ack = raw[1], raw[2], raw[3]
-    counter  = (raw[4] << 8) | raw[5]
-    time_ms  = (raw[6] << 8) | raw[7]
-    data     = bytes(raw[8:16])
+    counter = (raw[4] << 8) | raw[5]
+    time_ms = (raw[6] << 8) | raw[7]
+    data = bytes(raw[8:16])
     status1, status2 = raw[16], raw[17]
-    crc      = raw[18]
+    crc = raw[18]
 
-    computed = crc8(raw[1:18])   # Bytes 1..17
+    computed = crc8(raw[1:18])  # Bytes 1..17
     if computed != crc:
-        f = _bad(f"CRC-Fehler: 0x{computed:02X} != 0x{crc:02X}",
-                 msgid1=msgid1, msgid2=msgid2)
-        f.error = "crc"          # normierter Fehlercode für Zähler
+        f = _bad(f"CRC-Fehler: 0x{computed:02X} != 0x{crc:02X}", msgid1=msgid1, msgid2=msgid2)
+        f.error = "crc"  # normierter Fehlercode für Zähler
         return f
 
     return DownlinkFrame(
-        msgid1=msgid1, msgid2=msgid2, ack=ack,
-        counter=counter, time_ms=time_ms,
-        status1=status1, status2=status2, crc=crc, data=data,
+        msgid1=msgid1,
+        msgid2=msgid2,
+        ack=ack,
+        counter=counter,
+        time_ms=time_ms,
+        status1=status1,
+        status2=status2,
+        crc=crc,
+        data=data,
         fields=_decode_fields(msgid1, msgid2, data, status2),
     )
 
@@ -807,8 +825,8 @@ class FrameExtractor:
 
     def __init__(self) -> None:
         self._buf = bytearray()
-        self.crc_errors = 0        # Frames mit korrekten Markern aber falscher CRC
-        self.resync_bytes = 0      # verworfene Bytes bei Resync
+        self.crc_errors = 0  # Frames mit korrekten Markern aber falscher CRC
+        self.resync_bytes = 0  # verworfene Bytes bei Resync
 
     def feed(self, data: bytes) -> list[DownlinkFrame]:
         self._buf.extend(data)
@@ -820,13 +838,13 @@ class FrameExtractor:
         while True:
             start = buf.find(DL_START, pos)
             if start < 0:
-                pos = n                      # kein Startmarker mehr
+                pos = n  # kein Startmarker mehr
                 break
             if n - start < FRAME_SIZE:
-                pos = start                  # Teil-Frame → für nächstes feed behalten
+                pos = start  # Teil-Frame → für nächstes feed behalten
                 break
 
-            frame = parse_frame(bytes(buf[start:start + FRAME_SIZE]))
+            frame = parse_frame(bytes(buf[start : start + FRAME_SIZE]))
             if frame.valid:
                 frames.append(frame)
                 pos = start + FRAME_SIZE
@@ -834,7 +852,7 @@ class FrameExtractor:
                 if frame.error == "crc":
                     self.crc_errors += 1
                 self.resync_bytes += 1
-                pos = start + 1              # ein Byte weiter, neu synchronisieren
+                pos = start + 1  # ein Byte weiter, neu synchronisieren
 
         if pos:
             del buf[:pos]
@@ -847,11 +865,12 @@ class DecodedStore:
 
     def __init__(self, maxlen: int = 300) -> None:
         import threading
+
         self._lock = threading.Lock()
         self._frames: deque[dict] = deque(maxlen=maxlen)
         self._seq = 0
         self.total = 0
-        self.last_counter: Optional[int] = None
+        self.last_counter: int | None = None
 
     def add(self, frame: DownlinkFrame) -> None:
         with self._lock:
@@ -860,7 +879,7 @@ class DecodedStore:
             self.last_counter = frame.counter
             entry = frame.to_dict()
             entry["seq"] = self._seq
-            entry["ts"] = int(time.time() * 1000)   # Empfangszeit (epoch ms) für Live-Charts
+            entry["ts"] = int(time.time() * 1000)  # Empfangszeit (epoch ms) für Live-Charts
             self._frames.append(entry)
 
     def since(self, since: int) -> tuple[list[dict], int]:
@@ -875,5 +894,5 @@ class DecodedStore:
             return {
                 "frames_total": self.total,
                 "last_counter": self.last_counter,
-                "cursor":       self._seq,
+                "cursor": self._seq,
             }

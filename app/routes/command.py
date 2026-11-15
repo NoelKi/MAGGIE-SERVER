@@ -27,7 +27,7 @@ vorher muss POST /api/command/test {"action":"enter"} kommen. Einzige Ausnahme
 ist "off": das Ausschalten ist ein Sicherheitskommando und immer erlaubt.
 """
 
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, jsonify, request
 
 from app.extensions import socketio
 from app.services.tc_uplink import tc
@@ -36,25 +36,25 @@ command_bp = Blueprint("command", __name__)
 
 # ── Command-Frame (muss zu uplink_hal.hpp passen) ───────────────────────────
 UL_START = 0x7E
-UL_END   = 0x7F
+UL_END = 0x7F
 
 # OPCODE (UplinkOpcode) — Aktoren, nur im TEST-Zustand ausgeführt
 # 0x02..0x04 (MOTOR_HALF_TURN / HALF_TURN_FWD / HALF_TURN_REV) sind stillgelegt:
 # Die Positionsregelung im OBC ist entfallen, der Encoder ist nur noch Sensor.
 # Werte nicht neu vergeben.
 MOTOR1_OPCODES = {
-    "off":  0x00,   # Motor aus
-    "on":   0x01,   # Motor drehen, ARG = Geschwindigkeit -255..+255
-    "zero": 0x05,   # Encoder-Zähler auf 0 setzen
-    "turn": 0x06,   # Drehung um ARG Grad RELATIV, OBC stoppt am Encoder-Ziel
-    "goto": 0x07,   # Fahrt auf ARG Grad ABSOLUT (bezogen auf die Encoder-Null)
+    "off": 0x00,  # Motor aus
+    "on": 0x01,  # Motor drehen, ARG = Geschwindigkeit -255..+255
+    "zero": 0x05,  # Encoder-Zähler auf 0 setzen
+    "turn": 0x06,  # Drehung um ARG Grad RELATIV, OBC stoppt am Encoder-Ziel
+    "goto": 0x07,  # Fahrt auf ARG Grad ABSOLUT (bezogen auf die Encoder-Null)
 }
 
 # Motor 2 — baugleich zu Motor 1, eigene Opcodes (siehe uplink_hal.hpp:
 # MOTOR2_OFF..MOTOR2_GOTO). ARG-Bedeutung je Aktion identisch zu Motor 1.
 MOTOR2_OPCODES = {
-    "off":  0x08,
-    "on":   0x09,
+    "off": 0x08,
+    "on": 0x09,
     "zero": 0x0A,
     "turn": 0x0B,
     "goto": 0x0C,
@@ -85,7 +85,7 @@ MOTOR_ANGLE_MAX = 3600
 # OPCODE (UplinkOpcode) — Zustandsmaschine, immer erlaubt
 TEST_OPCODES = {
     "enter": 0x10,
-    "exit":  0x11,
+    "exit": 0x11,
 }
 
 OPCODE_ABORT = 0x1F
@@ -107,12 +107,12 @@ FORCE_SENSOR_MAX = 2
 # an die RCU des Arms weiter (MAGGIE_OBC/include/hal/arm_hal.hpp).
 # ARG: High-Byte = Gelenk (Node-ID), Low-Byte = Wert.
 ARM_OPCODES = {
-    "stop":     0x30,   # sofort anhalten — immer erlaubt (Boden + ARMED)
-    "inhibit":  0x31,   # sperren — immer erlaubt (Boden + ARMED)
-    "release":  0x32,   # freigeben, Voraussetzung für "jog" — nur TEST
-    "jog":      0x33,   # relativ drehen, Low-Byte = int8 Grad — nur TEST
-    "velocity": 0x34,   # Geschwindigkeit, Low-Byte = Grad/s — nur TEST
-    "blink":    0x35,   # LED blinken (Gelenk finden) — alle Bodenzustände
+    "stop": 0x30,  # sofort anhalten — immer erlaubt (Boden + ARMED)
+    "inhibit": 0x31,  # sperren — immer erlaubt (Boden + ARMED)
+    "release": 0x32,  # freigeben, Voraussetzung für "jog" — nur TEST
+    "jog": 0x33,  # relativ drehen, Low-Byte = int8 Grad — nur TEST
+    "velocity": 0x34,  # Geschwindigkeit, Low-Byte = Grad/s — nur TEST
+    "blink": 0x35,  # LED blinken (Gelenk finden) — alle Bodenzustände
     # Trajektorientest an 1–2 Gelenken (Tabelle in der Firmware, ±30° um den
     # aktuellen Winkel, Ende = Start) — nur TEST. Abbruch mit "stop".
     # Low-Byte = Node für Spalte 2 ("joint2", 0 = nur ein Gelenk).
@@ -127,7 +127,7 @@ ARM_ALL_JOINTS_ACTIONS = ("stop", "inhibit")
 ARM_MAX_JOINTS = 8
 ARM_JOG_MAX_DEG = 30
 ARM_SPEED_MIN_DEG_S = 1
-ARM_SPEED_MAX_DEG_S = 10    # Vorgabe Team: 10 °/s (OBC: ARM_JOG_MAX_VEL_DEG_S)
+ARM_SPEED_MAX_DEG_S = 10  # Vorgabe Team: 10 °/s (OBC: ARM_JOG_MAX_VEL_DEG_S)
 
 # UART-Ziel-Adresse am RXSM (0-7), auf der der OBC lauscht. Ggf. an den
 # physischen Aufbau des Test Modules anpassen.
@@ -168,7 +168,7 @@ def _read_dest(body: dict) -> int:
     try:
         dest = int(body.get("dest", DEFAULT_MOTOR_DEST))
     except (TypeError, ValueError):
-        raise _BadRequest("'dest' must be an integer")
+        raise _BadRequest("'dest' must be an integer") from None
     if not 0 <= dest <= 7:
         raise _BadRequest("'dest' must be in range 0..7")
     return dest
@@ -189,7 +189,7 @@ def _read_ranged_int(body: dict, key: str, lo: int, hi: int, default: int = 0) -
     try:
         value = int(body[key])
     except (TypeError, ValueError):
-        raise _BadRequest(f"'{key}' must be an integer")
+        raise _BadRequest(f"'{key}' must be an integer") from None
     if not lo <= value <= hi:
         raise _BadRequest(f"'{key}' must be in range {lo}..{hi}")
     return value
@@ -211,28 +211,36 @@ def _send(opcode: int, dest: int, label: str, arg: int = 0):
         result = tc.send_sdc(dest, payload)
     except RuntimeError as exc:
         # Auch der Fehlschlag geht an alle Clients — nicht nur an den Absender
-        socketio.emit("command:ack", {
-            "cmd_id":  -1,
-            "success": False,
-            "detail":  f"{label}: {exc}",
-        })
+        socketio.emit(
+            "command:ack",
+            {
+                "cmd_id": -1,
+                "success": False,
+                "detail": f"{label}: {exc}",
+            },
+        )
         return jsonify({"error": str(exc)}), 503
 
-    socketio.emit("command:ack", {
-        "cmd_id":  result["mcnt"],
-        "success": True,
-        "detail":  f"{label} → dest {result['dest']}",
-    })
+    socketio.emit(
+        "command:ack",
+        {
+            "cmd_id": result["mcnt"],
+            "success": True,
+            "detail": f"{label} → dest {result['dest']}",
+        },
+    )
 
-    return jsonify({
-        "status":   "ok",
-        "action":   label,
-        "opcode":   opcode,
-        "arg":      arg,
-        "mcnt":     result["mcnt"],
-        "dest":     result["dest"],
-        "sent_hex": result["sent_hex"],
-    }), 201
+    return jsonify(
+        {
+            "status": "ok",
+            "action": label,
+            "opcode": opcode,
+            "arg": arg,
+            "mcnt": result["mcnt"],
+            "dest": result["dest"],
+            "sent_hex": result["sent_hex"],
+        }
+    ), 201
 
 
 @command_bp.route("/command/motor", methods=["POST"])
@@ -269,9 +277,11 @@ def motor():
     motor_opcodes = MOTOR_OPCODES_BY_UNIT[unit]
 
     if action not in motor_opcodes:
-        return jsonify({
-            "error": f"'action' muss eines von {sorted(motor_opcodes)} sein",
-        }), 400
+        return jsonify(
+            {
+                "error": f"'action' muss eines von {sorted(motor_opcodes)} sein",
+            }
+        ), 400
 
     dest = _read_dest(body)
 
@@ -289,9 +299,11 @@ def motor():
         if arg == 0 and action == "turn":
             return jsonify({"error": "'angle' ist bei action='turn' erforderlich"}), 400
         if "angle" not in body:
-            return jsonify({
-                "error": f"'angle' ist bei action='{action}' erforderlich",
-            }), 400
+            return jsonify(
+                {
+                    "error": f"'angle' ist bei action='{action}' erforderlich",
+                }
+            ), 400
         bezug = "absolut" if action == "goto" else "relativ"
         label = f"motor {unit} {action} ({arg} Grad {bezug})"
     else:
@@ -353,9 +365,11 @@ def arm():
     action = str(body.get("action", "")).strip().lower()
 
     if action not in ARM_OPCODES:
-        return jsonify({
-            "error": f"'action' muss eines von {sorted(ARM_OPCODES)} sein",
-        }), 400
+        return jsonify(
+            {
+                "error": f"'action' muss eines von {sorted(ARM_OPCODES)} sein",
+            }
+        ), 400
 
     dest = _read_dest(body)
 
@@ -407,9 +421,11 @@ def test_state():
     action = str(body.get("action", "")).strip().lower()
 
     if action not in TEST_OPCODES:
-        return jsonify({
-            "error": f"'action' muss eines von {sorted(TEST_OPCODES)} sein",
-        }), 400
+        return jsonify(
+            {
+                "error": f"'action' muss eines von {sorted(TEST_OPCODES)} sein",
+            }
+        ), 400
 
     dest = _read_dest(body)
 

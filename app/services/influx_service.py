@@ -6,13 +6,13 @@ from typing import Any
 from flask import current_app
 from influxdb_client.client.influxdb_client import InfluxDBClient
 from influxdb_client.client.write.point import Point
-from influxdb_client.domain.write_precision import WritePrecision
 from influxdb_client.client.write_api import SYNCHRONOUS
-
+from influxdb_client.domain.write_precision import WritePrecision
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 def _client() -> InfluxDBClient:
     """Erstellt einen InfluxDBClient aus der aktuellen Flask-Config."""
@@ -28,7 +28,10 @@ def _client() -> InfluxDBClient:
 # Write
 # ──────────────────────────────────────────────────────────────────────────────
 
-def write_telemetry(measurement: str, fields: dict[str, Any], tags: dict[str, str] | None = None) -> None:
+
+def write_telemetry(
+    measurement: str, fields: dict[str, Any], tags: dict[str, str] | None = None
+) -> None:
     """
     Schreibt einen einzelnen Telemetrie-Datenpunkt in InfluxDB.
 
@@ -110,6 +113,7 @@ _RELATIVE_RANGE_S = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 def _range_seconds(start: str) -> int | None:
     """'-15m' -> 900. None fuer absolute Zeiten oder unbekannte Formate."""
     import re
+
     m = re.fullmatch(r"-(\d+)([smhd])", start.strip())
     return int(m.group(1)) * _RELATIVE_RANGE_S[m.group(2)] if m else None
 
@@ -138,7 +142,7 @@ def query_telemetry(
         Liste von Dicts: [{"time": ..., "field": ..., "value": ..., "tags": {...}}, ...]
     """
     bucket = current_app.config["INFLUX_BUCKET"]
-    org    = current_app.config["INFLUX_ORG"]
+    org = current_app.config["INFLUX_ORG"]
 
     # sort desc + limit → die NEUESTEN n Punkte je Feld (nicht die ältesten).
     # Wichtig fürs Live-Delta-Polling: bei kleinem Zeitfenster kommen so die
@@ -146,7 +150,7 @@ def query_telemetry(
     window = ""
     span_s = _range_seconds(start) if downsample else None
     if span_s:
-        every_s = max(1, -(-span_s // max(limit, 1)))   # aufgerundet, mind. 1 s
+        every_s = max(1, -(-span_s // max(limit, 1)))  # aufgerundet, mind. 1 s
         window = f"|> aggregateWindow(every: {every_s}s, fn: last, createEmpty: false)"
 
     flux = f"""
@@ -166,16 +170,29 @@ def query_telemetry(
 
         for table in tables:
             for record in table.records:
-                results.append({
-                    "time":        record.get_time().isoformat(),
-                    "measurement": record.get_measurement(),
-                    "field":       record.get_field(),
-                    "value":       record.get_value(),
-                    "tags": {
-                        k: v for k, v in record.values.items()
-                        if k not in ("_start", "_stop", "_time", "_value", "_field", "_measurement", "result", "table")
-                    },
-                })
+                results.append(
+                    {
+                        "time": record.get_time().isoformat(),
+                        "measurement": record.get_measurement(),
+                        "field": record.get_field(),
+                        "value": record.get_value(),
+                        "tags": {
+                            k: v
+                            for k, v in record.values.items()
+                            if k
+                            not in (
+                                "_start",
+                                "_stop",
+                                "_time",
+                                "_value",
+                                "_field",
+                                "_measurement",
+                                "result",
+                                "table",
+                            )
+                        },
+                    }
+                )
 
     return results
 
@@ -183,6 +200,7 @@ def query_telemetry(
 # ──────────────────────────────────────────────────────────────────────────────
 # Health check
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 def ping_influx() -> bool:
     """Gibt True zurück, wenn InfluxDB erreichbar ist."""

@@ -30,13 +30,13 @@ Mit echter Hardware (z.B. zwei USB-Seriell-Adapter):
 
 from __future__ import annotations
 
-import os
-import sys
-import math
-import time
-import errno
-import struct
 import argparse
+import errno
+import math
+import os
+import struct
+import sys
+import time
 
 # ── Downlink (telemetry_hal.hpp) ────────────────────────────────────────────
 DL_START, DL_END = 0x7E, 0x7F
@@ -65,9 +65,9 @@ OP_FORCE_TARE = 0x20
 
 # ── Motor (motor_hal.hpp) ───────────────────────────────────────────────────
 COUNTS_PER_REV = 4550
-DEFAULT_ON_SPEED = 220       # OBC-Default, wenn ARG 0 ist
-TURN_SPEED = 220             # feste Geschwindigkeit fuer MOTOR_TURN/GOTO
-MIN_DRIVE_SPEED = 220        # darunter laeuft der Motor nicht an
+DEFAULT_ON_SPEED = 220  # OBC-Default, wenn ARG 0 ist
+TURN_SPEED = 220  # feste Geschwindigkeit fuer MOTOR_TURN/GOTO
+MIN_DRIVE_SPEED = 220  # darunter laeuft der Motor nicht an
 
 # Abbruchkriterium einer Drehung (motor_hal.hpp: TURN_STALL_MS/TURN_MIN_COUNTS)
 TURN_STALL_S = 1.0
@@ -95,13 +95,13 @@ FORCE_HZ = 10
 # Elektrische Nullpunkte der Wandler im UNBELASTETEN Zustand, in der
 # Groessenordnung eines echten HX711 (zehntausende Counts). Sie sprengen das
 # int16 des Frames und sind der Grund, warum der OBC tarieren muss.
-FORCE1_ZERO = (120_000, -95_000, 210_000)           # X, Y, Z
-FORCE2_ZERO = (130_000, -80_000, 175_000, 96_000)   # A, B, C, D
+FORCE1_ZERO = (120_000, -95_000, 210_000)  # X, Y, Z
+FORCE2_ZERO = (130_000, -80_000, 175_000, 96_000)  # A, B, C, D
 
 # Simulierte Querlast auf den drei 120-Grad-Zellen von Sensor 2.
-FORCE2_LOAD_COUNTS    = 6_000.0   # Betrag der umlaufenden Querlast
-FORCE2_PRELOAD_COUNTS = 2_500.0   # Gleichanteil, muss am Boden herausfallen
-FORCE2_SPIN_DEG_PER_S = 30.0      # Umlaufgeschwindigkeit der Lastrichtung
+FORCE2_LOAD_COUNTS = 6_000.0  # Betrag der umlaufenden Querlast
+FORCE2_PRELOAD_COUNTS = 2_500.0  # Gleichanteil, muss am Boden herausfallen
+FORCE2_SPIN_DEG_PER_S = 30.0  # Umlaufgeschwindigkeit der Lastrichtung
 
 
 def crc8(data: bytes) -> int:
@@ -189,12 +189,12 @@ class ObcSimulator:
             if len(self._rx) - start < UPLINK_FRAME_SIZE:
                 del self._rx[:start]
                 return
-            frame = bytes(self._rx[start:start + UPLINK_FRAME_SIZE])
+            frame = bytes(self._rx[start : start + UPLINK_FRAME_SIZE])
             if frame[5] == UL_END and crc8(frame[1:4]) == frame[4]:
                 self._exec(frame[1], struct.unpack(">h", frame[2:4])[0])
-                del self._rx[:start + UPLINK_FRAME_SIZE]
+                del self._rx[: start + UPLINK_FRAME_SIZE]
             else:
-                del self._rx[:start + 1]      # Fehlstart -> ein Byte weiter
+                del self._rx[: start + 1]  # Fehlstart -> ein Byte weiter
 
     def _exec(self, opcode: int, arg: int) -> None:
         if opcode == OP_TEST_ENTER:
@@ -223,14 +223,15 @@ class ObcSimulator:
                 print(f"[OBC] FORCE_TARE mit ungueltigem ARG {arg} - ignoriert")
                 return
             self.tare_force(arg)
-            which = {0: "beide Kraftsensoren", 1: "Kraftsensor 1",
-                     2: "Kraftsensor 2"}[arg]
+            which = {0: "beide Kraftsensoren", 1: "Kraftsensor 1", 2: "Kraftsensor 2"}[arg]
             print(f"[OBC] TC FORCE_TARE - {which} genullt")
             return
 
         if not self.actuators_unlocked:
-            print(f"[OBC] TC 0x{opcode:02X} abgewiesen — Aktoren gesperrt "
-                  f"(Zustand {STATE_NAMES[self.state]})")
+            print(
+                f"[OBC] TC 0x{opcode:02X} abgewiesen — Aktoren gesperrt "
+                f"(Zustand {STATE_NAMES[self.state]})"
+            )
             return
 
         if opcode == OP_MOTOR_ON:
@@ -258,8 +259,10 @@ class ObcSimulator:
         elif opcode == OP_MOTOR_GOTO:
             target = int(arg) * COUNTS_PER_REV // 360
             if abs(target - self.position) <= POS_DEADBAND:
-                print(f"[OBC] TC MOTOR_GOTO ({arg} Grad) — Position "
-                      f"{self.position:.0f} schon im Zielfenster, keine Fahrt")
+                print(
+                    f"[OBC] TC MOTOR_GOTO ({arg} Grad) — Position "
+                    f"{self.position:.0f} schon im Zielfenster, keine Fahrt"
+                )
                 return
             print(f"[OBC] TC MOTOR_GOTO ({arg} Grad absolut = {target} Counts)")
             self._start_move(target)
@@ -296,61 +299,73 @@ class ObcSimulator:
             return
 
         # Endschalter wie updateTurn() im OBC: Vergleich in Fahrtrichtung.
-        reached = (self.position >= self.turn_target if self.pwm > 0
-                   else self.position <= self.turn_target)
+        reached = (
+            self.position >= self.turn_target if self.pwm > 0 else self.position <= self.turn_target
+        )
         if reached:
             # Nachlauf: der Motor steht nicht schlagartig, sondern laeuft noch
             # ein Stueck weiter (bzw. bremst kuerzer, wenn gebremst wird).
-            self.position += (self.overshoot_fwd if self.pwm > 0
-                              else -self.overshoot_rev)
-            print(f"[OBC] Fahrt beendet — Position {self.position:.0f} "
-                  f"(Ziel {self.turn_target:.0f})")
+            self.position += self.overshoot_fwd if self.pwm > 0 else -self.overshoot_rev
+            print(
+                f"[OBC] Fahrt beendet — Position {self.position:.0f} "
+                f"(Ziel {self.turn_target:.0f})"
+            )
             self.turn_target = None
             self.on, self.pwm = False, 0
             return
 
         # Fortschrittsfenster wie TURN_STALL_MS/TURN_MIN_COUNTS im OBC.
-        progress = (self.position - self.turn_ref_pos if self.pwm > 0
-                    else self.turn_ref_pos - self.position)
+        progress = (
+            self.position - self.turn_ref_pos if self.pwm > 0 else self.turn_ref_pos - self.position
+        )
         if progress >= TURN_MIN_COUNTS:
             self.turn_ref_pos = self.position
             self.turn_ref_t = 0.0
         else:
             self.turn_ref_t += dt
             if self.turn_ref_t >= TURN_STALL_S:
-                print(f"[OBC] Drehung abgebrochen — in {TURN_STALL_S:.0f} s nur "
-                      f"{progress:.0f} Counts in Fahrtrichtung "
-                      f"(Position {self.position:.0f}, Ziel {self.turn_target:.0f})")
+                print(
+                    f"[OBC] Drehung abgebrochen — in {TURN_STALL_S:.0f} s nur "
+                    f"{progress:.0f} Counts in Fahrtrichtung "
+                    f"(Position {self.position:.0f}, Ziel {self.turn_target:.0f})"
+                )
                 self.turn_target = None
                 self.turn_failed = True
                 self.on, self.pwm = False, 0
 
     # -- Downlink -----------------------------------------------------------
-    def _frame(self, msgid1: int, msgid2: int, data: bytes, status1: int,
-               status2: int = 0) -> bytes:
+    def _frame(
+        self, msgid1: int, msgid2: int, data: bytes, status1: int, status2: int = 0
+    ) -> bytes:
         self.counter = (self.counter + 1) & 0xFFFF
         t = int((time.time() - self.t0) * 1000) & 0xFFFF
-        body = bytes([msgid1, msgid2, 0]) + struct.pack(">HH", self.counter, t) \
-            + data + bytes([status1, status2])
+        body = (
+            bytes([msgid1, msgid2, 0])
+            + struct.pack(">HH", self.counter, t)
+            + data
+            + bytes([status1, status2])
+        )
         return bytes([DL_START]) + body + bytes([crc8(body), DL_END])
 
     def imu_frames(self) -> bytes:
         """Ruhende IMU: 1 g auf z, etwas Rauschen (BMI088-Counts)."""
         t = time.time() - self.t0
-        n = lambda f, a: int(a * math.sin(t * f))                      # noqa: E731
+        n = lambda f, a: int(a * math.sin(t * f))  # noqa: E731
         accel = struct.pack(">hhh", n(3.1, 60), n(2.3, 45), 10920 + n(5.0, 30))
-        gyro  = struct.pack(">hhh", n(1.7, 90), n(2.9, 70), n(4.1, 50))
+        gyro = struct.pack(">hhh", n(1.7, 90), n(2.9, 70), n(4.1, 50))
         s1 = STATUS1_SYSTEM_HEALTHY | STATUS1_IMU_VALID
-        return (self._frame(SUBSYS_IMU, IMU_ACCEL, accel + bytes(2), s1)
-                + self._frame(SUBSYS_IMU, IMU_GYRO, gyro + bytes(2), s1))
+        return self._frame(SUBSYS_IMU, IMU_ACCEL, accel + bytes(2), s1) + self._frame(
+            SUBSYS_IMU, IMU_GYRO, gyro + bytes(2), s1
+        )
 
     def _force1_now(self) -> tuple[int, ...]:
         """Rohe HX711-Counts von Sensor 1 (X/Y/Z) inkl. Nullpunkt-Offset."""
         t = time.time() - self.t0
         return tuple(
             int(zero + amp * math.sin(t * f + p))
-            for zero, amp, f, p in zip(FORCE1_ZERO, (8_000, 6_000, 4_000),
-                                       (0.7, 0.5, 0.9), (0.0, 1.0, 2.5))
+            for zero, amp, f, p in zip(
+                FORCE1_ZERO, (8_000, 6_000, 4_000), (0.7, 0.5, 0.9), (0.0, 1.0, 2.5), strict=False
+            )
         )
 
     def _force2_now(self) -> tuple[int, ...]:
@@ -370,15 +385,15 @@ class ObcSimulator:
         t = time.time() - self.t0
         phi = t * FORCE2_SPIN_DEG_PER_S
         radial = [
-            FORCE2_LOAD_COUNTS * math.cos(math.radians(phi - theta))
-            + FORCE2_PRELOAD_COUNTS
+            FORCE2_LOAD_COUNTS * math.cos(math.radians(phi - theta)) + FORCE2_PRELOAD_COUNTS
             for theta in (0.0, 120.0, 240.0)
         ]
-        z = 4_000.0 * math.sin(t * 0.4)      # langsame Z-Last auf Zelle D
-        return tuple(int(o + v) for o, v in zip(FORCE2_ZERO, radial + [z]))
+        z = 4_000.0 * math.sin(t * 0.4)  # langsame Z-Last auf Zelle D
+        return tuple(int(o + v) for o, v in zip(FORCE2_ZERO, radial + [z], strict=False))
 
-    def _force_frame(self, msgid2: int, raw: tuple[int, ...],
-                     offset: tuple[int, ...], tared: bool) -> bytes:
+    def _force_frame(
+        self, msgid2: int, raw: tuple[int, ...], offset: tuple[int, ...], tared: bool
+    ) -> bytes:
         """
         Ein FORCE-Frame bauen — tarierte Counts, saturiert auf int16.
 
@@ -387,7 +402,7 @@ class ObcSimulator:
         """
         flags = FORCE_TARED if tared else 0
         values = []
-        for i, (r, o) in enumerate(zip(raw, offset)):
+        for i, (r, o) in enumerate(zip(raw, offset, strict=False)):
             value = r - o
             if value > 32767:
                 value = 32767
@@ -398,16 +413,18 @@ class ObcSimulator:
             values.append(value)
 
         data = struct.pack(">" + "h" * len(values), *values)
-        data += bytes(8 - len(data))          # nicht belegte Kanaele bleiben 0
+        data += bytes(8 - len(data))  # nicht belegte Kanaele bleiben 0
         return self._frame(SUBSYS_FORCE, msgid2, data, STATUS1_SYSTEM_HEALTHY, flags)
 
     def force1_frame(self) -> bytes:
-        return self._force_frame(FORCE_TARGET1, self._force1_now(),
-                                 self.force1_offset, self.force1_tared)
+        return self._force_frame(
+            FORCE_TARGET1, self._force1_now(), self.force1_offset, self.force1_tared
+        )
 
     def force2_frame(self) -> bytes:
-        return self._force_frame(FORCE_TARGET2, self._force2_now(),
-                                 self.force2_offset, self.force2_tared)
+        return self._force_frame(
+            FORCE_TARGET2, self._force2_now(), self.force2_offset, self.force2_tared
+        )
 
     def tare_force(self, sensor: int) -> None:
         """sensor: 0 = beide, 1 = Kraftsensor 1, 2 = Kraftsensor 2."""
@@ -419,7 +436,7 @@ class ObcSimulator:
             self.force2_tared = True
 
     def motor_frame(self) -> bytes:
-        state = MOTOR_ENCODER_OK          # simulierter Encoder ist immer da
+        state = MOTOR_ENCODER_OK  # simulierter Encoder ist immer da
         if self.on:
             state |= MOTOR_ON
         if self.turn_target is not None:
@@ -461,6 +478,7 @@ class SerialLink:
 
     def __init__(self, port: str, baud: int) -> None:
         import serial
+
         self._ser = serial.Serial(port, baud, timeout=0)
         self.device = port
 
@@ -473,23 +491,29 @@ class SerialLink:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="MAGGIE OBC-Simulator (serieller RXSM-Pfad)")
-    ap.add_argument("--downlink", help="serieller Port, auf dem der Simulator sendet "
-                                       "(leer = PTY anlegen)")
-    ap.add_argument("--uplink", help="serieller Port, auf dem der Simulator Telecommands "
-                                     "empfängt (leer = PTY anlegen)")
+    ap.add_argument(
+        "--downlink", help="serieller Port, auf dem der Simulator sendet " "(leer = PTY anlegen)"
+    )
+    ap.add_argument(
+        "--uplink",
+        help="serieller Port, auf dem der Simulator Telecommands " "empfängt (leer = PTY anlegen)",
+    )
     ap.add_argument("--baud", type=int, default=38400)
-    ap.add_argument("--seconds", type=float, default=0.0,
-                    help="nach N Sekunden beenden (0 = endlos)")
+    ap.add_argument(
+        "--seconds", type=float, default=0.0, help="nach N Sekunden beenden (0 = endlos)"
+    )
     args = ap.parse_args()
 
     down = SerialLink(args.downlink, args.baud) if args.downlink else PtyLink()
-    up   = SerialLink(args.uplink, args.baud) if args.uplink else PtyLink()
+    up = SerialLink(args.uplink, args.baud) if args.uplink else PtyLink()
 
     print("MAGGIE OBC-Simulator")
     print("  Downlink (Server liest):   SERIAL_PORT=" + down.device)
     print("  Uplink   (Server schreibt): TC_SERIAL_PORT=" + up.device)
-    print(f"  Telemetrie {TELEMETRY_HZ} Hz, Kraft {FORCE_HZ} Hz, "
-          f"Zustand {SYS_HZ} Hz — Strg-C beendet\n")
+    print(
+        f"  Telemetrie {TELEMETRY_HZ} Hz, Kraft {FORCE_HZ} Hz, "
+        f"Zustand {SYS_HZ} Hz — Strg-C beendet\n"
+    )
 
     obc = ObcSimulator()
     tick = 1.0 / TELEMETRY_HZ

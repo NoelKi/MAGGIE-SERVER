@@ -15,7 +15,7 @@ Der /raw-Endpoint ist zum Pollen gedacht: der Client merkt sich den
 zurückgegebenen `cursor` und schickt ihn als `since` beim nächsten Aufruf.
 """
 
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, jsonify, request
 
 from app.services.serial_listener import downlink
 
@@ -55,12 +55,14 @@ def frames():
     frame_list, cursor = downlink.decoded.since(since)
     dec = downlink.decode_snapshot()
 
-    return jsonify({
-        "cursor":       cursor,
-        "frames":       frame_list,
-        "frames_total": dec["frames_total"],
-        "crc_errors":   dec["crc_errors"],
-    }), 200
+    return jsonify(
+        {
+            "cursor": cursor,
+            "frames": frame_list,
+            "frames_total": dec["frames_total"],
+            "crc_errors": dec["crc_errors"],
+        }
+    ), 200
 
 
 @downlink_bp.route("/downlink/raw", methods=["GET"])
@@ -90,24 +92,28 @@ def raw():
     data, cursor, dropped = downlink.buffer.read_since(since)
     snap = downlink.buffer.snapshot()
 
-    return jsonify({
-        "cursor":        cursor,
-        "hex":           data.hex(),
-        "count":         len(data),
-        "dropped":       dropped,
-        "total_bytes":   snap["total_bytes"],
-        "bytes_per_sec": snap["bytes_per_sec"],
-        "connected":     snap["connected"],
-    }), 200
+    return jsonify(
+        {
+            "cursor": cursor,
+            "hex": data.hex(),
+            "count": len(data),
+            "dropped": dropped,
+            "total_bytes": snap["total_bytes"],
+            "bytes_per_sec": snap["bytes_per_sec"],
+            "connected": snap["connected"],
+        }
+    ), 200
 
 
 @downlink_bp.route("/downlink/ports", methods=["GET"])
 def ports():
     """Listet verfügbare serielle Ports (für die Port-Auswahl in der GUI)."""
-    return jsonify({
-        "available": downlink.buffer.snapshot()["available"],
-        "ports":     downlink.list_ports(),
-    }), 200
+    return jsonify(
+        {
+            "available": downlink.buffer.snapshot()["available"],
+            "ports": downlink.list_ports(),
+        }
+    ), 200
 
 
 @downlink_bp.route("/downlink/connect", methods=["POST"])

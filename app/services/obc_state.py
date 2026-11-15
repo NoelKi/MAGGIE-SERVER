@@ -27,19 +27,19 @@ Online-Erkennung:
   Ablauf auf False und broadcastet den geänderten Snapshot.
 """
 
-import time
 import logging
 import threading
+import time
 
 from app.extensions import socketio
 from app.services.packet_parser import (
-    RexusHeader,
+    FLAG_APOGEE,
+    FLAG_BURNOUT,
     FLAG_LIFTOFF,
+    FLAG_PARACHUTE,
     FLAG_SODS,
     FLAG_SOEX,
-    FLAG_BURNOUT,
-    FLAG_APOGEE,
-    FLAG_PARACHUTE,
+    RexusHeader,
 )
 
 log = logging.getLogger(__name__)
@@ -54,11 +54,11 @@ _WATCHDOG_INTERVAL_S = 1.0
 def flags_to_dict(flags_byte: int) -> dict:
     """Zerlegt das Flag-Byte des Paket-Headers in das GS-Interface `FlagState`."""
     return {
-        "liftoff":   bool(flags_byte & FLAG_LIFTOFF),
-        "sods":      bool(flags_byte & FLAG_SODS),
-        "soex":      bool(flags_byte & FLAG_SOEX),
-        "burnout":   bool(flags_byte & FLAG_BURNOUT),
-        "apogee":    bool(flags_byte & FLAG_APOGEE),
+        "liftoff": bool(flags_byte & FLAG_LIFTOFF),
+        "sods": bool(flags_byte & FLAG_SODS),
+        "soex": bool(flags_byte & FLAG_SOEX),
+        "burnout": bool(flags_byte & FLAG_BURNOUT),
+        "apogee": bool(flags_byte & FLAG_APOGEE),
         "parachute": bool(flags_byte & FLAG_PARACHUTE),
     }
 
@@ -70,29 +70,33 @@ class ObcState:
         self._lock = threading.Lock()
 
         # Aus dem Paket-Header
-        self._flags_byte    = 0
-        self._flight_phase  = "ground"
+        self._flags_byte = 0
+        self._flight_phase = "ground"
         self._last_sequence = 0
-        self._timestamp_ms  = 0
+        self._timestamp_ms = 0
 
         # Aus Heartbeat- bzw. System-Paketen
-        self._boot_count     = 0
-        self._last_heartbeat = 0.0      # Unix-Zeit, 0 = noch nie
-        self._uptime_ms      = 0
+        self._boot_count = 0
+        self._last_heartbeat = 0.0  # Unix-Zeit, 0 = noch nie
+        self._uptime_ms = 0
 
         # Online-Erkennung (monotonic — immun gegen Systemzeit-Sprünge)
         self._last_rx_monotonic = 0.0
         self._online = False
 
         # Missionszustand — kommt aus SYS/STATE-Frames des seriellen Downlinks
-        self._mission_state  = "UNKNOWN"
+        self._mission_state = "UNKNOWN"
         self._operation_mode = "NONE"
         self._arm = {
-            "joint1_position": 0.0, "joint2_position": 0.0,
-            "joint1_current": 0.0,  "joint2_current": 0.0,
-            "error_code": 0, "status_flags": 0, "updated_at": 0,
+            "joint1_position": 0.0,
+            "joint2_position": 0.0,
+            "joint1_current": 0.0,
+            "joint2_current": 0.0,
+            "error_code": 0,
+            "status_flags": 0,
+            "updated_at": 0,
         }
-        self._hrdm  = {"deployed": False, "locked": False, "updated_at": 0}
+        self._hrdm = {"deployed": False, "locked": False, "updated_at": 0}
         self._light = {"on": False, "updated_at": 0}
 
     # ── Lesen ────────────────────────────────────────────────────────────────
@@ -101,19 +105,19 @@ class ObcState:
         """Vollständiger Zustand im Format des GS-Interfaces `ObcSnapshot`."""
         with self._lock:
             return {
-                "online":         self._online,
-                "mission_state":  self._mission_state,
+                "online": self._online,
+                "mission_state": self._mission_state,
                 "operation_mode": self._operation_mode,
-                "flight_phase":   self._flight_phase,
-                "flags":          flags_to_dict(self._flags_byte),
-                "arm":            dict(self._arm),
-                "hrdm":           dict(self._hrdm),
-                "light":          dict(self._light),
+                "flight_phase": self._flight_phase,
+                "flags": flags_to_dict(self._flags_byte),
+                "arm": dict(self._arm),
+                "hrdm": dict(self._hrdm),
+                "light": dict(self._light),
                 "last_heartbeat": self._last_heartbeat,
-                "last_sequence":  self._last_sequence,
-                "boot_count":     self._boot_count,
-                "uptime_ms":      self._uptime_ms,
-                "timestamp_ms":   self._timestamp_ms,
+                "last_sequence": self._last_sequence,
+                "boot_count": self._boot_count,
+                "uptime_ms": self._uptime_ms,
+                "timestamp_ms": self._timestamp_ms,
             }
 
     def flags(self) -> dict:
@@ -138,10 +142,10 @@ class ObcState:
                 or not self._online
             )
 
-            self._flags_byte    = hdr.flags
-            self._flight_phase  = hdr.flight_phase
+            self._flags_byte = hdr.flags
+            self._flight_phase = hdr.flight_phase
             self._last_sequence = hdr.sequence
-            self._timestamp_ms  = hdr.timestamp_ms
+            self._timestamp_ms = hdr.timestamp_ms
 
             self._last_rx_monotonic = time.monotonic()
             self._online = True
@@ -175,7 +179,7 @@ class ObcState:
     def note_heartbeat(self, boot_count: int) -> None:
         """Verbucht einen Heartbeat (Type 0xFF)."""
         with self._lock:
-            self._boot_count     = boot_count
+            self._boot_count = boot_count
             self._last_heartbeat = time.time()
 
     def note_uptime(self, uptime_s: float) -> None:
@@ -213,6 +217,7 @@ obc_state = ObcState()
 
 # ── Broadcast-Helfer ─────────────────────────────────────────────────────────
 
+
 def emit_state() -> None:
     """Broadcastet den aktuellen Snapshot als `obc:state` an alle Clients."""
     socketio.emit("obc:state", obc_state.snapshot())
@@ -232,10 +237,8 @@ _watchdog_thread: threading.Thread | None = None
 def _watchdog_loop() -> None:
     while True:
         socketio.sleep(_WATCHDOG_INTERVAL_S)
-        if obc_state._expire_if_stale():   # noqa: SLF001 — modul-interner Zustand
-            log.warning(
-                "OBC offline — kein Paket seit %.1f s", OBC_ONLINE_TIMEOUT_S
-            )
+        if obc_state._expire_if_stale():  # noqa: SLF001 — modul-interner Zustand
+            log.warning("OBC offline — kein Paket seit %.1f s", OBC_ONLINE_TIMEOUT_S)
             emit_state()
 
 

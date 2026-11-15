@@ -62,8 +62,8 @@ TC_PACKET_SIZE = 24
 SYNC1 = 0xEB
 SYNC2 = 0x90
 
-MSGID_SMC = 0x00   # System Management Command
-MSGID_SDC = 0xA5   # Serial Data Command
+MSGID_SMC = 0x00  # System Management Command
+MSGID_SDC = 0xA5  # Serial Data Command
 
 # SMC Data[0] PWR CTRL Bit-Masken
 PWR_TM = 0x80
@@ -78,17 +78,19 @@ PWR_E6 = 0x01
 
 # ─── Datenklassen ────────────────────────────────────────────────────────────
 
+
 @dataclass
 class SmcCommand:
     """Geparster SMC-Befehl (MSGID=0x00) vom RXSM."""
-    mcnt: int           # Message Counter
-    pwr_ctrl: int       # Data[0] – Power-Control-Byte (Rohwert)
-    sods: int           # Data[1] – SODS-Bits (Rohwert)
-    soe: int            # Data[2] – SOE-Bits  (Rohwert)
-    ute: int            # Data[3] – UTE-Bits  (Rohwert)
-    status: int         # Data[4] – Status-Bits (Rohwert)
-    rcs_ctrl: int       # Data[5] – RCS-Control-Byte (Rohwert)
-    data_raw: bytes     # alle 16 Data-Bytes (Data[0..15]) für Debugging
+
+    mcnt: int  # Message Counter
+    pwr_ctrl: int  # Data[0] – Power-Control-Byte (Rohwert)
+    sods: int  # Data[1] – SODS-Bits (Rohwert)
+    soe: int  # Data[2] – SOE-Bits  (Rohwert)
+    ute: int  # Data[3] – UTE-Bits  (Rohwert)
+    status: int  # Data[4] – Status-Bits (Rohwert)
+    rcs_ctrl: int  # Data[5] – RCS-Control-Byte (Rohwert)
+    data_raw: bytes  # alle 16 Data-Bytes (Data[0..15]) für Debugging
 
     # Convenience-Properties
     @property
@@ -104,8 +106,7 @@ class SmcCommand:
     @property
     def experiments_on(self) -> list[int]:
         """Gibt Liste der eingeschalteten Experiment-Nummern zurück (1-6)."""
-        masks = [(PWR_E1, 1), (PWR_E2, 2), (PWR_E3, 3),
-                 (PWR_E4, 4), (PWR_E5, 5), (PWR_E6, 6)]
+        masks = [(PWR_E1, 1), (PWR_E2, 2), (PWR_E3, 3), (PWR_E4, 4), (PWR_E5, 5), (PWR_E6, 6)]
         return [num for mask, num in masks if self.pwr_ctrl & mask]
 
     @property
@@ -122,23 +123,25 @@ class SmcCommand:
 @dataclass
 class SdcCommand:
     """Geparster SDC-Befehl (MSGID=0xA5) vom RXSM."""
-    mcnt: int           # Message Counter
-    dest: int           # UART-Ziel-Adresse (Bits [7:5] von Data[0])
-    length: int         # Anzahl Nutzdatenbytes (Bits [4:0] von Data[0])
-    payload: bytes      # eigentliche Nutzdaten (max. 15 Bytes)
-    data_raw: bytes     # alle 16 Data-Bytes für Debugging
+
+    mcnt: int  # Message Counter
+    dest: int  # UART-Ziel-Adresse (Bits [7:5] von Data[0])
+    length: int  # Anzahl Nutzdatenbytes (Bits [4:0] von Data[0])
+    payload: bytes  # eigentliche Nutzdaten (max. 15 Bytes)
+    data_raw: bytes  # alle 16 Data-Bytes für Debugging
 
 
 @dataclass
 class TcParseResult:
     """Ergebnis eines geparseten TC-Pakets."""
-    raw: bytes          # Original-Rohbytes
-    msgid: int          # 0x00 oder 0xA5
-    mcnt: int           # Message Counter
+
+    raw: bytes  # Original-Rohbytes
+    msgid: int  # 0x00 oder 0xA5
+    mcnt: int  # Message Counter
     smc: SmcCommand | None = None
     sdc: SdcCommand | None = None
-    csm: int = 0        # 16-Bit Checksumme
-    crc: int = 0        # 16-Bit CRC
+    csm: int = 0  # 16-Bit Checksumme
+    crc: int = 0  # 16-Bit CRC
     crc_valid: bool = False
 
     @property
@@ -153,6 +156,7 @@ class TcParseResult:
 
 
 # ─── CRC-Berechnung ─────────────────────────────────────────────────────────
+
 
 def _crc16(data: bytes) -> int:
     """
@@ -183,6 +187,7 @@ def _csm(data: bytes) -> int:
 
 # ─── Haupt-Parse-Funktion ───────────────────────────────────────────────────
 
+
 def parse_tc_packet(raw: bytes) -> TcParseResult:
     """
     Parst ein 24-Byte RXSM-Telecommand-Paket.
@@ -197,9 +202,7 @@ def parse_tc_packet(raw: bytes) -> TcParseResult:
         ValueError: Bei falscher Länge oder ungültigem Sync.
     """
     if len(raw) != TC_PACKET_SIZE:
-        raise ValueError(
-            f"TC-Paket muss {TC_PACKET_SIZE} Bytes haben, bekommen: {len(raw)}"
-        )
+        raise ValueError(f"TC-Paket muss {TC_PACKET_SIZE} Bytes haben, bekommen: {len(raw)}")
 
     sync1, sync2, msgid, mcnt = raw[0], raw[1], raw[2], raw[3]
 
@@ -209,13 +212,13 @@ def parse_tc_packet(raw: bytes) -> TcParseResult:
             f"(erwartet 0x{SYNC1:02X} 0x{SYNC2:02X})"
         )
 
-    data = raw[4:20]           # Data[0..15] — 16 Bytes
+    data = raw[4:20]  # Data[0..15] — 16 Bytes
     csm_val = (raw[20] << 8) | raw[21]
     crc_val = (raw[22] << 8) | raw[23]
 
     # CRC über Bytes 0..21 (SYNC+MSGID+MCNT+Data+CSM)
     expected_crc = _crc16(raw[:22])
-    crc_ok = (crc_val == expected_crc)
+    crc_ok = crc_val == expected_crc
 
     result = TcParseResult(
         raw=raw,
@@ -241,7 +244,7 @@ def parse_tc_packet(raw: bytes) -> TcParseResult:
     elif msgid == MSGID_SDC:
         dest = (data[0] >> 5) & 0x07
         length = data[0] & 0x1F
-        payload = bytes(data[1:1 + length]) if length > 0 else b""
+        payload = bytes(data[1 : 1 + length]) if length > 0 else b""
         result.sdc = SdcCommand(
             mcnt=mcnt,
             dest=dest,
@@ -254,6 +257,7 @@ def parse_tc_packet(raw: bytes) -> TcParseResult:
 
 
 # ─── Hilfsfunktion: TC-Paket bauen (für Tests / OBC-Simulation) ─────────────
+
 
 def build_smc_packet(
     mcnt: int = 0,

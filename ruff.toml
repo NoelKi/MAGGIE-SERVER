@@ -1,0 +1,30 @@
+# Ruff – Linter und Formatierer für MAGGIE_SERVER.
+# VS Code: Extension "Ruff" (charliermarsh.ruff), formatiert beim Speichern
+# (.vscode/settings.json). Kommandozeile im Projektordner:
+#   .venv/bin/ruff check .      # Lint
+#   .venv/bin/ruff format .     # formatieren
+
+target-version = "py310"   # wie pyrightconfig.json
+line-length = 100          # der bestehende Code nutzt bis ~100 Zeichen
+
+extend-exclude = [".venv", "__pycache__"]
+
+[lint]
+select = [
+    "E",    # pycodestyle Fehler
+    "W",    # pycodestyle Warnungen
+    "F",    # pyflakes: ungenutzte Imports/Variablen, undefinierte Namen
+    "I",    # Import-Sortierung (ersetzt isort)
+    "B",    # bugbear: typische Fehlerquellen
+    "UP",   # pyupgrade: moderne Syntax für Python 3.10
+]
+ignore = [
+    "E501",  # Zeilenlänge - erledigt der Formatierer, lange Strings/Kommentare bleiben erlaubt
+]
+
+[lint.isort]
+known-first-party = ["app", "config"]
+
+[format]
+quote-style = "double"
+indent-style = "space"

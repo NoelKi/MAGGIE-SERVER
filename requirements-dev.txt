@@ -1,0 +1,3 @@
+# Nur fuer die Entwicklung (Linter/Formatierer), nicht fuer den Betrieb.
+-r requirements.txt
+ruff==0.8.4

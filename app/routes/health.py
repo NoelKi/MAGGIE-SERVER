@@ -9,8 +9,10 @@ def health():
     GET /api/health
     Einfacher Health-Check für den Server.
     """
-    return jsonify({
-        "status": "ok",
-        "service": "MAGGIE Ground Station Server",
-        "version": "1.0.0",
-    }), 200
+    return jsonify(
+        {
+            "status": "ok",
+            "service": "MAGGIE Ground Station Server",
+            "version": "1.0.0",
+        }
+    ), 200
