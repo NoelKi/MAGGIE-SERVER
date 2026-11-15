@@ -32,6 +32,17 @@ DATA-Layout:
   FORCE/TARGET2: [c0 c1 c2 c3]   (4× int16: A, B, C, D)
                  Flags beider FORCE-Typen stehen in STATUS2, nicht in DATA —
                  TARGET2 braucht alle acht DATA-Bytes für seine vier Zellen.
+  ARM/JOINT:     [node state angle_urad(int32) 0 0]
+  ARM/VOLTAGE:   [node 0 bus_mv(uint16) stepper_mv(uint16) 0 0]
+  ARM/TEMP:      [node 0 mcu(int16) imu(int16) 0 0]
+  ARM/RCU_ACCEL: [ax ay az 0 0]   (3× int16, ±4 g)
+  ARM/RCU_GYRO:  [gx gy gz 0 0]   (3× int16, ±500 °/s)
+  SYS/ARM_LINK:  [frames_ok(uint16) frames_bad(uint16) last_msg last_node
+                  silence(0,1 s) freefall_count], STATUS2 bit0 = Link lebt
+
+Die ARM-Werte reicht der OBC unverändert von der Roboterarm-RCU durch
+(LISA-ODISEE ICD v0.9, MAGGIE_OBC/include/hal/arm_hal.hpp). Referenz für die
+Skalierung: MAGGIE_OBC/extern/lisa-if/lisa/payloads.py.
 
 Skalierung (Bodenstation):
   accel [m/s²] = count · 9.80665 / 10920   (±3 g)
@@ -66,6 +77,7 @@ SUBSYS_IMU   = 0x01
 SUBSYS_MOTOR = 0x02
 SUBSYS_SYS   = 0x03
 SUBSYS_FORCE = 0x04
+SUBSYS_ARM   = 0x05   # Roboterarm, von der RCU durchgereicht
 
 # MSGID2 – Nachrichtentyp (IMU-Subsystem)
 IMU_ACCEL = 0x01
@@ -83,6 +95,17 @@ FORCE_TARGET2 = 0x02   # 4 Zellen A/B/C/D (Eigenbau, 3× 120° + Z)
 SYS_STATE      = 0x01
 SYS_UPLINK     = 0x02
 SYS_UPLINK_RAW = 0x03
+SYS_ARM_LINK   = 0x04
+
+# MSGID2 – ARM (DownlinkArmMsg)
+ARM_JOINT     = 0x01
+ARM_VOLTAGE   = 0x02
+ARM_TEMP      = 0x03
+ARM_RCU_ACCEL = 0x04
+ARM_RCU_GYRO  = 0x05
+
+# SYS/ARM_LINK – STATUS2
+ARM_LINK_ALIVE = 0x01
 
 # Die ersten acht Bytes, die ein fehlerfrei uebertragenes SDC-Telecommand
 # an der OBC-UART erzeugen muss: SYNC1 SYNC2 MSGID MCNT DEST/LEN START OPCODE ARGHI.
@@ -154,6 +177,19 @@ MOTOR_DEG_PER_COUNT  = 360.0 / MOTOR_COUNTS_PER_REV
 # Skalierungsfaktoren (identisch zur OBC-Firmware imu_hal.cpp)
 ACCEL_SCALE = 9.80665 / 10920.0    # int16-Count → m/s²
 GYRO_SCALE  = 1.0 / 65.536         # int16-Count → °/s
+
+# ── Roboterarm (LISA-RCU) ──────────────────────────────────────────────────────
+# Identisch zu MAGGIE_OBC/extern/lisa-if/lisa/protocol.py (RCU_*_SCALE): rohe
+# int16-Counts der RCU-IMU, ±4 g bzw. ±500 °/s Vollausschlag.
+ARM_RCU_ACC_SCALE_MS2 = 4.0 / 32768.0 * 9.80665
+ARM_RCU_GYRO_SCALE_DPS = 500.0 / 32768.0
+
+# Temperatur der Gelenke: /100 statt der in der ICD genannten /10 — mit /10
+# lagen reale Werte bei ~800 °C. Übernommen aus lisa-if (decode_temperature),
+# dort vom Team bestätigt. Ändert die RCU-Firmware das, hier mitziehen.
+ARM_TEMP_DIV = 100.0
+
+_URAD_TO_DEG = 180.0 / math.pi / 1e6
 
 # ── Kraftsensoren (HX711) ──────────────────────────────────────────────────────
 #
@@ -566,10 +602,97 @@ def _decode_sys_uplink_raw(data: bytes, status2: int) -> dict:
     }
 
 
+# ── Roboterarm ───────────────────────────────────────────────────────────────
+#
+# Feldnamen tragen das Gelenk (arm_j<node>_…): So landen alle Gelenke in EINEM
+# Measurement "arm" und in denselben Live-Werten der GUI, ohne sich zu
+# überschreiben — analog zu motor2_/force2_.
+
+def _decode_arm_joint(data: bytes, status2: int) -> dict:
+    # DATA: [node state angle_urad(int32 BE) 0 0]
+    node, state, angle_urad = struct.unpack_from(">BBi", data)
+    p = f"arm_j{node}_"
+    return {
+        "arm_node":         node,
+        # Bitbelegung laut ICD nur "SM phase + reference source" — roh lassen.
+        f"{p}state":        state,
+        f"{p}angle_urad":   angle_urad,
+        f"{p}angle_deg":    round(angle_urad * _URAD_TO_DEG, 3),
+    }
+
+
+def _decode_arm_voltage(data: bytes, status2: int) -> dict:
+    # DATA: [node 0 bus_mv(uint16 BE) stepper_mv(uint16 BE) 0 0]
+    node, _pad, bus_mv, stepper_mv = struct.unpack_from(">BBHH", data)
+    p = f"arm_j{node}_"
+    return {
+        "arm_node":        node,
+        f"{p}bus_v":       round(bus_mv / 1000.0, 3),
+        f"{p}stepper_v":   round(stepper_mv / 1000.0, 3),
+    }
+
+
+def _decode_arm_temp(data: bytes, status2: int) -> dict:
+    # DATA: [node 0 mcu(int16 BE) imu(int16 BE) 0 0]
+    node, _pad, mcu, imu = struct.unpack_from(">BBhh", data)
+    p = f"arm_j{node}_"
+    return {
+        "arm_node":        node,
+        f"{p}mcu_temp_c":  round(mcu / ARM_TEMP_DIV, 2),
+        f"{p}imu_temp_c":  round(imu / ARM_TEMP_DIV, 2),
+    }
+
+
+def _decode_arm_rcu_accel(data: bytes, status2: int) -> dict:
+    ax, ay, az = struct.unpack_from(">hhh", data)
+    return {
+        "arm_rcu_ax": round(ax * ARM_RCU_ACC_SCALE_MS2, 4),
+        "arm_rcu_ay": round(ay * ARM_RCU_ACC_SCALE_MS2, 4),
+        "arm_rcu_az": round(az * ARM_RCU_ACC_SCALE_MS2, 4),
+    }
+
+
+def _decode_arm_rcu_gyro(data: bytes, status2: int) -> dict:
+    gx, gy, gz = struct.unpack_from(">hhh", data)
+    return {
+        "arm_rcu_gx": round(gx * ARM_RCU_GYRO_SCALE_DPS, 4),
+        "arm_rcu_gy": round(gy * ARM_RCU_GYRO_SCALE_DPS, 4),
+        "arm_rcu_gz": round(gz * ARM_RCU_GYRO_SCALE_DPS, 4),
+    }
+
+
+def _decode_sys_arm_link(data: bytes, status2: int) -> dict:
+    # DATA: [frames_ok(uint16 BE) frames_bad(uint16 BE) last_msg last_node
+    #        silence(uint8, 0,1 s) freefall_count]
+    frames_ok, frames_bad, last_msg, last_node, silence, freefall = \
+        struct.unpack_from(">HHBBBB", data)
+    return {
+        # frames_ok bleibt 0: RCU antwortet gar nicht (Kabel, Strom, Baudrate).
+        # frames_bad steigt, frames_ok nicht: Bytes kommen an, aber falsch —
+        # meist eine falsche Baudrate (ARM_BAUDRATE in data_rates.hpp).
+        "arm_link_alive":      bool(status2 & ARM_LINK_ALIVE),
+        "arm_link_frames_ok":  frames_ok,
+        "arm_link_frames_bad": frames_bad,
+        "arm_link_last_msg":   last_msg if frames_ok else None,
+        "arm_link_last_node":  last_node if frames_ok else None,
+        # 255 = ≥ 25,5 s oder noch nie ein Frame
+        "arm_link_silence_s":  None if silence == 0xFF else round(silence / 10.0, 1),
+        "arm_freefall_count":  freefall,
+    }
+
+
+register_message(SUBSYS_ARM, ARM_JOINT,     "arm", "joint",     "arm", _decode_arm_joint)
+register_message(SUBSYS_ARM, ARM_VOLTAGE,   "arm", "voltage",   "arm", _decode_arm_voltage)
+register_message(SUBSYS_ARM, ARM_TEMP,      "arm", "temp",      "arm", _decode_arm_temp)
+register_message(SUBSYS_ARM, ARM_RCU_ACCEL, "arm", "rcu_accel", "arm", _decode_arm_rcu_accel)
+register_message(SUBSYS_ARM, ARM_RCU_GYRO,  "arm", "rcu_gyro",  "arm", _decode_arm_rcu_gyro)
+
 register_message(SUBSYS_SYS, SYS_STATE, "sys", "state", "obc", _decode_sys)
 register_message(SUBSYS_SYS, SYS_UPLINK, "sys", "uplink", "obc", _decode_sys_uplink)
 register_message(SUBSYS_SYS, SYS_UPLINK_RAW, "sys", "uplink_raw", "obc",
                  _decode_sys_uplink_raw)
+register_message(SUBSYS_SYS, SYS_ARM_LINK, "sys", "arm_link", "obc",
+                 _decode_sys_arm_link)
 
 # NEUEN WERT HINZUFÜGEN — dreimal etwas, sonst nichts. Kraftsensor 1 oben ist
 # das gelebte Beispiel:

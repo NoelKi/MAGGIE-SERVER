@@ -9,6 +9,7 @@ seriellen TC-Port (tc_uplink).
 
   POST /api/command/motor        — Motor 1 oder 2 drehen/stoppen (Open Loop)
   POST /api/command/force/tare   — Kraftsensor 1 und/oder 2 nullen
+  POST /api/command/arm          — Roboterarm: Gelenk joggen, freigeben, stoppen …
   POST /api/command/test         — Bodentest-Zustand betreten/verlassen
   POST /api/command/abort        — Abbruch (Aktoren stoppen)
   GET  /api/command/status       — TC-Uplink-Verbindungsstatus
@@ -101,6 +102,28 @@ OPCODE_FORCE_TARE = 0x20
 # ARG von FORCE_TARE: 0 = beide Kraftsensoren, 1 = Sensor 1, 2 = Sensor 2.
 FORCE_SENSOR_MIN = 0
 FORCE_SENSOR_MAX = 2
+
+# OPCODE (UplinkOpcode) — Roboterarm (0x3x). Der OBC reicht sie als LISA-Befehl
+# an die RCU des Arms weiter (MAGGIE_OBC/include/hal/arm_hal.hpp).
+# ARG: High-Byte = Gelenk (Node-ID), Low-Byte = Wert.
+ARM_OPCODES = {
+    "stop":     0x30,   # sofort anhalten — immer erlaubt (Boden + ARMED)
+    "inhibit":  0x31,   # sperren — immer erlaubt (Boden + ARMED)
+    "release":  0x32,   # freigeben, Voraussetzung für "jog" — nur TEST
+    "jog":      0x33,   # relativ drehen, Low-Byte = int8 Grad — nur TEST
+    "velocity": 0x34,   # Geschwindigkeit, Low-Byte = Grad/s — nur TEST
+    "blink":    0x35,   # LED blinken (Gelenk finden) — alle Bodenzustände
+}
+
+# Gelenk 0 = "alle" — nur in die sichere Richtung (stop, inhibit).
+ARM_ALL_JOINTS_ACTIONS = ("stop", "inhibit")
+
+# Muss zu ARM_MAX_JOINTS (arm_hal.hpp) und ARM_JOG_MAX_DEG (system.hpp) passen.
+# Der OBC prüft beides selbst noch einmal und verwirft, was nicht passt.
+ARM_MAX_JOINTS = 8
+ARM_JOG_MAX_DEG = 30
+ARM_SPEED_MIN_DEG_S = 1
+ARM_SPEED_MAX_DEG_S = 255
 
 # UART-Ziel-Adresse am RXSM (0-7), auf der der OBC lauscht. Ggf. an den
 # physischen Aufbau des Test Modules anpassen.
@@ -300,6 +323,72 @@ def force_tare():
 
     label = "force tare (beide)" if sensor == 0 else f"force tare (Sensor {sensor})"
     return _send(OPCODE_FORCE_TARE, dest, label, sensor)
+
+
+@command_bp.route("/command/arm", methods=["POST"])
+def arm():
+    """
+    Steuert ein Gelenk des Roboterarms.
+
+    Body (JSON):
+      { "action": "stop"|"inhibit"|"release"|"jog"|"velocity"|"blink",
+        "joint":  <1..8; 0 = alle, nur bei stop/inhibit>,
+        "angle":  <±1..±30 Grad, bei "jog">,
+        "speed":  <1..255 Grad/s, bei "velocity">,
+        "dest":   <0-7, optional> }
+
+    Ablauf am Boden: TEST betreten → "velocity" (langsam!) → "release" →
+    "jog" in kleinen Schritten → "inhibit". Ein Gelenk im Zustand INHIBITED
+    ignoriert Fahrbefehle (ICD 3.2).
+
+    Der OBC führt release/jog/velocity nur im TEST-Zustand aus. stop und
+    inhibit gehen immer, beim Verlassen von TEST und bei ABORT schickt der OBC
+    beides selbst an alle Gelenke.
+    """
+    body = request.get_json(silent=True) or {}
+    action = str(body.get("action", "")).strip().lower()
+
+    if action not in ARM_OPCODES:
+        return jsonify({
+            "error": f"'action' muss eines von {sorted(ARM_OPCODES)} sein",
+        }), 400
+
+    dest, err = _read_dest(body)
+    if err:
+        return err
+
+    if "joint" not in body:
+        return jsonify({"error": "'joint' ist erforderlich"}), 400
+    joint_min = 0 if action in ARM_ALL_JOINTS_ACTIONS else 1
+    joint, err = _read_ranged_int(body, "joint", joint_min, ARM_MAX_JOINTS)
+    if err:
+        return err
+
+    value = 0
+    if action == "jog":
+        if "angle" not in body:
+            return jsonify({"error": "'angle' ist bei action='jog' erforderlich"}), 400
+        value, err = _read_ranged_int(body, "angle", -ARM_JOG_MAX_DEG, ARM_JOG_MAX_DEG)
+        if err:
+            return err
+        if value == 0:
+            return jsonify({"error": "'angle' darf nicht 0 sein"}), 400
+        label = f"arm jog Gelenk {joint} ({value:+d} Grad)"
+    elif action == "velocity":
+        if "speed" not in body:
+            return jsonify({"error": "'speed' ist bei action='velocity' erforderlich"}), 400
+        value, err = _read_ranged_int(body, "speed", ARM_SPEED_MIN_DEG_S, ARM_SPEED_MAX_DEG_S)
+        if err:
+            return err
+        label = f"arm velocity Gelenk {joint} ({value} Grad/s)"
+    else:
+        target = "alle Gelenke" if joint == 0 else f"Gelenk {joint}"
+        label = f"arm {action} {target}"
+
+    # Low-Byte als Zweierkomplement (negative Jog-Winkel), ARG als int16 —
+    # _build_payload maskiert ohnehin auf 16 Bit.
+    arg = (joint << 8) | (value & 0xFF)
+    return _send(ARM_OPCODES[action], dest, label, arg)
 
 
 @command_bp.route("/command/test", methods=["POST"])
