@@ -33,7 +33,7 @@ class Config:
     #   Linux:  /dev/ttyUSB0
     #   Windows: COM3
     SERIAL_PORT      = os.getenv("SERIAL_PORT", "")
-    SERIAL_BAUD      = int(os.getenv("SERIAL_BAUD", "38400"))   # RXSM Standard: 38400 8N1
+    SERIAL_BAUD      = int(os.getenv("SERIAL_BAUD", "38400"))   # RXSM: 38400 8N1, muss zu OBC rates::DOWNLINK_BAUDRATE passen
     SERIAL_AUTOSTART = os.getenv("SERIAL_AUTOSTART", "true").lower() == "true"
     # Größe des In-Memory-Ringpuffers für den Live-Hexdump (Bytes)
     SERIAL_BUFFER_BYTES = int(os.getenv("SERIAL_BUFFER_BYTES", str(256 * 1024)))
@@ -44,6 +44,6 @@ class Config:
     # vom read-only Downlink oben. TC_SERIAL_PORT leer lassen → zur Laufzeit
     # über /api/command/connect wählen.
     TC_SERIAL_PORT = os.getenv("TC_SERIAL_PORT", "")
-    TC_SERIAL_BAUD = int(os.getenv("TC_SERIAL_BAUD", "38400"))
+    TC_SERIAL_BAUD = int(os.getenv("TC_SERIAL_BAUD", "38400"))   # gleicher Adapter wie SERIAL_BAUD im Bodenaufbau
     TC_AUTOSTART   = os.getenv("TC_AUTOSTART", "true").lower() == "true"
 

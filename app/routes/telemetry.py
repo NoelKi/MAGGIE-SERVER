@@ -61,6 +61,7 @@ def fetch():
         start / range  (str,  optional) – Flux-Zeit, Standard "-1h"
         stop           (str,  optional) – Flux-Zeit, Standard "now()"
         limit          (int,  optional) – Max. Datenpunkte, Standard 500
+        downsample     (0/1,  optional) – auf ~limit Punkte je Feld ausduennen
 
     Beispiel:
         GET /api/telemetry?measurement=imu&range=-30m&limit=100
@@ -79,7 +80,9 @@ def fetch():
         return jsonify({"error": "'limit' must be an integer"}), 400
 
     try:
-        data = query_telemetry(measurement=measurement, start=start, stop=stop, limit=limit)
+        downsample = request.args.get("downsample", "0") in ("1", "true")
+        data = query_telemetry(measurement=measurement, start=start, stop=stop,
+                               limit=limit, downsample=downsample)
     except Exception as exc:  # noqa: BLE001
         return jsonify({"error": "InfluxDB query failed", "detail": str(exc)}), 502
 

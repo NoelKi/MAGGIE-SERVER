@@ -104,11 +104,22 @@ def write_telemetry_batch(points: list[dict[str, Any]]) -> int:
 # Query
 # ──────────────────────────────────────────────────────────────────────────────
 
+_RELATIVE_RANGE_S = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+
+
+def _range_seconds(start: str) -> int | None:
+    """'-15m' -> 900. None fuer absolute Zeiten oder unbekannte Formate."""
+    import re
+    m = re.fullmatch(r"-(\d+)([smhd])", start.strip())
+    return int(m.group(1)) * _RELATIVE_RANGE_S[m.group(2)] if m else None
+
+
 def query_telemetry(
     measurement: str,
     start: str = "-1h",
     stop: str = "now()",
     limit: int = 500,
+    downsample: bool = False,
 ) -> list[dict[str, Any]]:
     """
     Liest Telemetrie-Datenpunkte aus InfluxDB.
@@ -118,6 +129,10 @@ def query_telemetry(
         start:       Flux-Zeitangabe, z.B. "-1h", "-30m", "2026-03-07T00:00:00Z"
         stop:        Flux-Zeitangabe, Standard "now()"
         limit:       Maximale Anzahl Datenpunkte
+        downsample:  True -> InfluxDB fasst das Zeitfenster auf ~limit Punkte je
+                     Feld zusammen (letzter Wert je Zeitscheibe). Fuer Diagramme:
+                     Bei 100-Hz-Daten dauert die Rohabfrage einer Stunde sonst
+                     mehrere Sekunden und blockiert die Live-Abfragen der GUI.
 
     Returns:
         Liste von Dicts: [{"time": ..., "field": ..., "value": ..., "tags": {...}}, ...]
@@ -128,10 +143,17 @@ def query_telemetry(
     # sort desc + limit → die NEUESTEN n Punkte je Feld (nicht die ältesten).
     # Wichtig fürs Live-Delta-Polling: bei kleinem Zeitfenster kommen so die
     # aktuellsten Messwerte zurück.
+    window = ""
+    span_s = _range_seconds(start) if downsample else None
+    if span_s:
+        every_s = max(1, -(-span_s // max(limit, 1)))   # aufgerundet, mind. 1 s
+        window = f"|> aggregateWindow(every: {every_s}s, fn: last, createEmpty: false)"
+
     flux = f"""
         from(bucket: "{bucket}")
           |> range(start: {start}, stop: {stop})
           |> filter(fn: (r) => r["_measurement"] == "{measurement}")
+          {window}
           |> sort(columns: ["_time"], desc: true)
           |> limit(n: {limit})
     """
