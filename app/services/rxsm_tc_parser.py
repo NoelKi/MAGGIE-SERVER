@@ -208,8 +208,7 @@ def parse_tc_packet(raw: bytes) -> TcParseResult:
 
     if sync1 != SYNC1 or sync2 != SYNC2:
         raise ValueError(
-            f"Ungültiger Sync: 0x{sync1:02X} 0x{sync2:02X} "
-            f"(erwartet 0x{SYNC1:02X} 0x{SYNC2:02X})"
+            f"Ungültiger Sync: 0x{sync1:02X} 0x{sync2:02X} (erwartet 0x{SYNC1:02X} 0x{SYNC2:02X})"
         )
 
     data = raw[4:20]  # Data[0..15] — 16 Bytes

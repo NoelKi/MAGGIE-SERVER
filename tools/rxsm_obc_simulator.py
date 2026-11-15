@@ -307,8 +307,7 @@ class ObcSimulator:
             # ein Stueck weiter (bzw. bremst kuerzer, wenn gebremst wird).
             self.position += self.overshoot_fwd if self.pwm > 0 else -self.overshoot_rev
             print(
-                f"[OBC] Fahrt beendet — Position {self.position:.0f} "
-                f"(Ziel {self.turn_target:.0f})"
+                f"[OBC] Fahrt beendet — Position {self.position:.0f} (Ziel {self.turn_target:.0f})"
             )
             self.turn_target = None
             self.on, self.pwm = False, 0
@@ -492,11 +491,11 @@ class SerialLink:
 def main() -> int:
     ap = argparse.ArgumentParser(description="MAGGIE OBC-Simulator (serieller RXSM-Pfad)")
     ap.add_argument(
-        "--downlink", help="serieller Port, auf dem der Simulator sendet " "(leer = PTY anlegen)"
+        "--downlink", help="serieller Port, auf dem der Simulator sendet (leer = PTY anlegen)"
     )
     ap.add_argument(
         "--uplink",
-        help="serieller Port, auf dem der Simulator Telecommands " "empfängt (leer = PTY anlegen)",
+        help="serieller Port, auf dem der Simulator Telecommands empfängt (leer = PTY anlegen)",
     )
     ap.add_argument("--baud", type=int, default=38400)
     ap.add_argument(

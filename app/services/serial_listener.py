@@ -53,7 +53,7 @@ except ImportError:  # pragma: no cover
     serial = None  # type: ignore[assignment]
     list_ports = None  # type: ignore[assignment]
     SERIAL_AVAILABLE = False
-    log.warning("pyserial nicht installiert — RXSM-Downlink deaktiviert " "(pip install pyserial)")
+    log.warning("pyserial nicht installiert — RXSM-Downlink deaktiviert (pip install pyserial)")
 
 
 # ── Ringpuffer ────────────────────────────────────────────────────────────────

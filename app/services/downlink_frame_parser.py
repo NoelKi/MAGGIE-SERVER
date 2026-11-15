@@ -593,12 +593,16 @@ def _decode_sys_uplink_raw(data: bytes, status2: int) -> dict:
     raw = list(data[:length])
 
     # Diagnose 1: passt der Kopf zum erwarteten SDC-Paket?
-    head_ok = all(exp is None or got == exp for got, exp in zip(raw, SDC_EXPECTED_HEAD, strict=False))
+    head_ok = all(
+        exp is None or got == exp for got, exp in zip(raw, SDC_EXPECTED_HEAD, strict=False)
+    )
 
     # Diagnose 2: sind die Bytes bitweise invertiert? Klassisch bei einer
     # RS-232-Strecke, deren Invertierung in einer Richtung nicht aufgehoben wird.
     inverted = [b ^ 0xFF for b in raw]
-    inverted_ok = all(exp is None or got == exp for got, exp in zip(inverted, SDC_EXPECTED_HEAD, strict=False))
+    inverted_ok = all(
+        exp is None or got == exp for got, exp in zip(inverted, SDC_EXPECTED_HEAD, strict=False)
+    )
 
     return {
         "uplink_raw_hex": " ".join(f"{b:02X}" for b in raw),

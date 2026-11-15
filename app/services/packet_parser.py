@@ -259,7 +259,7 @@ def parse_packet(raw: bytes) -> RexusPacket:
         return RexusPacket(
             header=header,
             valid=False,
-            error=f"CRC-Fehler: berechnet 0x{computed_crc:04X}, " f"erwartet 0x{crc16:04X}",
+            error=f"CRC-Fehler: berechnet 0x{computed_crc:04X}, erwartet 0x{crc16:04X}",
         )
 
     # Payload parsen
