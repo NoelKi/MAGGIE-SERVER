@@ -113,6 +113,9 @@ ARM_OPCODES = {
     "jog":      0x33,   # relativ drehen, Low-Byte = int8 Grad — nur TEST
     "velocity": 0x34,   # Geschwindigkeit, Low-Byte = Grad/s — nur TEST
     "blink":    0x35,   # LED blinken (Gelenk finden) — alle Bodenzustände
+    # Trajektorien-Test an EINEM Gelenk (Tabelle in der Firmware, ±30° um den
+    # aktuellen Winkel, Ende = Start) — nur TEST. Abbruch mit "stop".
+    "traj_test": 0x36,
 }
 
 # Gelenk 0 = "alle" — nur in die sichere Richtung (stop, inhibit).
@@ -331,7 +334,7 @@ def arm():
     Steuert ein Gelenk des Roboterarms.
 
     Body (JSON):
-      { "action": "stop"|"inhibit"|"release"|"jog"|"velocity"|"blink",
+      { "action": "stop"|"inhibit"|"release"|"jog"|"velocity"|"blink"|"traj_test",
         "joint":  <1..8; 0 = alle, nur bei stop/inhibit>,
         "angle":  <±1..±30 Grad, bei "jog">,
         "speed":  <1..255 Grad/s, bei "velocity">,
