@@ -11,7 +11,7 @@ seriellen TC-Port (tc_uplink).
   POST /api/command/force/tare   — Kraftsensor 1 und/oder 2 nullen
   POST /api/command/arm          — Roboterarm: Gelenk joggen, freigeben, stoppen …
   POST /api/command/test         — Bodentest-Zustand betreten/verlassen
-  POST /api/command/abort        — Abbruch (Aktoren stoppen)
+  POST /api/command/camera       — Kamera: Aufnahme starten/stoppen, abfragen
   GET  /api/command/status       — TC-Uplink-Verbindungsstatus
   POST /api/command/connect      — TC-Port (neu)starten
   POST /api/command/disconnect   — TC-Port trennen
@@ -88,11 +88,20 @@ TEST_OPCODES = {
     "exit": 0x11,
 }
 
-OPCODE_ABORT = 0x1F
-
 # Zurueck nach PRE_LAUNCH, aus jedem Zustand (Testwerkzeug - im Flug gibt es
 # keinen Uplink). Zustaende bleiben sonst ueber jeden Neustart erhalten.
 OPCODE_STATE_RESET = 0x12
+
+# Flug-Schalter des Roboterarms (UplinkOpcode::ARM_FLIGHT_ENABLE). ARG 1 = an
+# (OBC nimmt das nur in PRE_LAUNCH an), 0 = aus (Boden + ARMED). An: Die
+# Flug-Trajektorie startet in ROBOT_ARM sofort; aus: erst, wenn eine IMU
+# Schwerelosigkeit misst. TEST betreten schaltet ihn im OBC wieder aus.
+OPCODE_ARM_FLIGHT_ENABLE = 0x13
+
+# Kamera (RunCam, camera_hal.hpp): ARG High-Byte = Kamera 1..4 (0 = alle),
+# Low-Byte = Aktion. Stopp fuehrt der OBC nur in PRE_LAUNCH/TEST aus.
+OPCODE_CAMERA = 0x40
+CAMERA_ACTIONS = {"start": 1, "stop": 2, "probe": 3}
 
 # OPCODE (UplinkOpcode) — Sensoren (0x2x), zustandsunabhängig.
 # Tarieren bewegt keinen Aktor und liegt deshalb bewusst nicht hinter der
@@ -358,7 +367,7 @@ def arm():
     ignoriert Fahrbefehle (ICD 3.2).
 
     Der OBC führt release/jog/velocity nur im TEST-Zustand aus. stop und
-    inhibit gehen immer, beim Verlassen von TEST und bei ABORT schickt der OBC
+    inhibit gehen immer, beim Verlassen von TEST und bei der Rückkehr nach PRE_LAUNCH schickt der OBC
     beides selbst an alle Gelenke.
     """
     body = request.get_json(silent=True) or {}
@@ -432,16 +441,51 @@ def test_state():
     return _send(TEST_OPCODES[action], dest, f"test {action}")
 
 
-@command_bp.route("/command/abort", methods=["POST"])
-def abort():
+@command_bp.route("/command/arm-flight", methods=["POST"])
+def arm_flight():
     """
-    Missionsabbruch: der OBC geht nach ABORT und stoppt alle Aktoren.
+    Flug-Schalter des Roboterarms.
 
-    Body (JSON): { "dest": <0-7, optional> }
+    Body (JSON): { "enable": true | false, "dest": <0-7, optional> }
+
+    Letzter Schritt vor dem Flug (in PRE_LAUNCH). Bei Bodentests, die die
+    REXUS-Signale bis ROBOT_ARM durchspielen, MUSS er aus sein - sonst fährt
+    der ganze Arm unter Schwerkraft. Ob er an ist, meldet SYS/ARM_FLIGHT.
     """
-    dest = _read_dest(request.get_json(silent=True) or {})
+    body = request.get_json(silent=True) or {}
+    enable = body.get("enable")
+    if not isinstance(enable, bool):
+        return jsonify({"error": "'enable' (true/false) ist erforderlich"}), 400
+    dest = _read_dest(body)
+    return _send(
+        OPCODE_ARM_FLIGHT_ENABLE,
+        dest,
+        f"arm flight {'an' if enable else 'aus'}",
+        1 if enable else 0,
+    )
 
-    return _send(OPCODE_ABORT, dest, "abort")
+
+@command_bp.route("/command/camera", methods=["POST"])
+def camera():
+    """
+    Kamera-Befehl an den OBC.
+
+    Body (JSON): { "action": "start" | "stop" | "probe",
+                   "camera": 0-4 (0 = alle, Standard), "dest": <0-7, optional> }
+
+    Die Kameras nehmen selbst ab dem Einschalten auf; der OBC meldet in
+    SYS/CAMERA, ob sie antworten. "stop" nimmt der OBC nur am Boden an.
+    """
+    body = request.get_json(silent=True) or {}
+    action = body.get("action")
+    if action not in CAMERA_ACTIONS:
+        return jsonify({"error": "'action' muss start, stop oder probe sein"}), 400
+    cam = body.get("camera", 0)
+    if isinstance(cam, bool) or not isinstance(cam, int) or not 0 <= cam <= 4:
+        return jsonify({"error": "'camera' muss 0 (alle) bis 4 sein"}), 400
+    dest = _read_dest(body)
+    label = f"camera {action} {'alle' if cam == 0 else cam}"
+    return _send(OPCODE_CAMERA, dest, label, (cam << 8) | CAMERA_ACTIONS[action])
 
 
 @command_bp.route("/command/state-reset", methods=["POST"])

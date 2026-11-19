@@ -98,6 +98,33 @@ SYS_UPLINK = 0x02
 SYS_UPLINK_RAW = 0x03
 SYS_ARM_LINK = 0x04
 SYS_ARM_TRAJ = 0x05
+SYS_ARM_FLIGHT = 0x06
+SYS_CAMERA = 0x07
+SYS_CAMERA_INFO = 0x08
+
+# RunCam-Feature-Bits (GET_DEVICE_INFO), Belegung wie ArduPilot AP_RunCam.h
+CAM_FEATURE_NAMES = {
+    0: "power_button",
+    1: "wifi_button",
+    2: "change_mode",
+    3: "5key_osd",
+    4: "settings_access",
+    5: "display_port",
+    6: "start_recording",
+    7: "stop_recording",
+    8: "cms_menu",
+    9: "fc_attitude",
+}
+
+# SYS/CAMERA – Flags je Kamera (DATA[0..3]), siehe telemetry_hal.hpp DL_CAM_*
+CAM_ALIVE = 0x01
+CAM_ANSWERED = 0x02
+CAM_FEAT_START = 0x04
+CAM_FEAT_STOP = 0x08
+CAM_SENT_START = 0x10
+CAM_SENT_STOP = 0x20
+CAM_RX_ANY = 0x40  # Diagnose: irgendein Byte auf eine Abfrage
+CAM_RX_GARBAGE = 0x80  # Diagnose: Bytes, aber keine gueltige Antwort
 
 # MSGID2 – ARM (DownlinkArmMsg)
 ARM_JOINT = 0x01
@@ -164,7 +191,7 @@ MISSION_STATES = {
     2: "ASCENT",
     3: "EXPERIMENT",
     4: "DESCENT",
-    5: "ABORT",
+    5: "ABORT",  # nur alte Firmware/Aufzeichnungen - Zustand am 17.11.2026 entfernt
     6: "TEST",
     7: "ROBOT_ARM",
 }
@@ -706,9 +733,90 @@ ARM_TRAJ_RESULTS = {
     5: "TRACK_ERROR",  # Schleppfehler zu groß
     6: "TX_FULL",
     7: "FINISH_TIMEOUT",  # Startwinkel nicht erreicht
-    8: "CANCELLED",  # STOP/INHIBIT, TEST verlassen, ABORT
+    8: "CANCELLED",  # STOP/INHIBIT, TEST verlassen
     9: "REFUSED",  # Start abgelehnt (Tabelle, Gelenk, Link)
 }
+
+
+# SYS/ARM_FLIGHT — Flug-Trajektorie (MAGGIE_OBC ArmFlightPlayer) und ihre
+# Freigabe. Werte müssen zu ArmFlightPlayer::Phase und DL_ARM_FLIGHT_* passen.
+# STATUS1 (Frame-Feld "status1") = aktuelle Fehlermaske, STATUS2 = unterstes
+# Byte der CRC32 der eingebauten Tabelle.
+ARM_FLIGHT_PHASES = {
+    0: "IDLE",  # nicht gestartet / abgebrochen
+    1: "APPROACH",  # fährt langsam in die Startpose
+    2: "RUN",
+    3: "FINISH",  # letzter Punkt (Verstaupose)
+    4: "DONE",
+    5: "RESUME_WAIT",  # nach OBC-Neustart: wartet auf Gelenkmeldungen
+}
+ARM_FLIGHT_SWITCH = 0x01  # Flug-Schalter an
+ARM_FLIGHT_UG_OBC = 0x02  # OBC-IMU misst Schwerelosigkeit
+ARM_FLIGHT_UG_RCU = 0x04  # RCU-IMU misst Schwerelosigkeit
+ARM_FLIGHT_TABLE_OK = 0x08  # eingebaute Tabelle geprüft und ok
+ARM_FLIGHT_RESUMED = 0x10  # nach Neustart fortgesetzt
+ARM_FLIGHT_STARTED = 0x20  # in diesem Flug gestartet
+ARM_FLIGHT_DONE = 0x40  # in diesem Flug fertig
+ARM_FLIGHT_HOLD = 0x80  # Bahn wartet auf ein nachhängendes Gelenk
+
+
+def _decode_sys_arm_flight(data: bytes, status2: int) -> dict:
+    # DATA: [phase flags fault_sticky step(uint16 BE) max_err(uint16 BE, 0,01°) joints]
+    phase, flags, sticky, step, max_err, joints = struct.unpack_from(">BBBHHB", data)
+    return {
+        "arm_flight_phase": phase,
+        "arm_flight_phase_name": ARM_FLIGHT_PHASES.get(phase, f"0x{phase:02X}"),
+        "arm_flight_switch": bool(flags & ARM_FLIGHT_SWITCH),
+        "arm_flight_ug_obc": bool(flags & ARM_FLIGHT_UG_OBC),
+        "arm_flight_ug_rcu": bool(flags & ARM_FLIGHT_UG_RCU),
+        "arm_flight_table_ok": bool(flags & ARM_FLIGHT_TABLE_OK),
+        "arm_flight_resumed": bool(flags & ARM_FLIGHT_RESUMED),
+        "arm_flight_started": bool(flags & ARM_FLIGHT_STARTED),
+        "arm_flight_done": bool(flags & ARM_FLIGHT_DONE),
+        "arm_flight_hold": bool(flags & ARM_FLIGHT_HOLD),
+        "arm_flight_fault_sticky": sticky,  # Bit k = Tabellenspalte k
+        "arm_flight_step": step,
+        "arm_flight_t_s": round(step * 0.1, 1),
+        "arm_flight_max_err_deg": round(max_err / 100.0, 2),
+        "arm_flight_joints": joints,
+        "arm_flight_crc_lo": status2,
+    }
+
+
+def _decode_sys_camera(data: bytes, status2: int) -> dict:
+    # DATA: [flags Kamera 1..4][Sekunden seit letzter Antwort 1..4, 255 = nie/>=255]
+    out: dict = {}
+    for i in range(4):
+        f = data[i]
+        age = data[4 + i]
+        n = i + 1
+        out[f"cam{n}_alive"] = bool(f & CAM_ALIVE)
+        out[f"cam{n}_answered"] = bool(f & CAM_ANSWERED)
+        out[f"cam{n}_feat_start"] = bool(f & CAM_FEAT_START)
+        out[f"cam{n}_feat_stop"] = bool(f & CAM_FEAT_STOP)
+        out[f"cam{n}_last_cmd"] = (
+            "start" if f & CAM_SENT_START else "stop" if f & CAM_SENT_STOP else None
+        )
+        out[f"cam{n}_age_s"] = None if age == 255 else age
+        out[f"cam{n}_rx_any"] = bool(f & CAM_RX_ANY)
+        out[f"cam{n}_rx_garbage"] = bool(f & CAM_RX_GARBAGE)
+    return out
+
+
+def _decode_sys_camera_info(data: bytes, status2: int) -> dict:
+    # DATA: [Kamera 1..4][Protokoll][Features LE (2)][Fehlversuche BE (2)][0][0]
+    cam, protocol = data[0], data[1]
+    features = data[2] | (data[3] << 8)
+    failed = struct.unpack_from(">H", data, 4)[0]
+    names = [n for bit, n in sorted(CAM_FEATURE_NAMES.items()) if features & (1 << bit)]
+    return {
+        "cam_info_cam": cam,
+        "cam_info_protocol": protocol,
+        "cam_info_features": features,
+        "cam_info_features_hex": f"0x{features:04X}",
+        "cam_info_feature_names": ",".join(names),
+        "cam_info_probes_failed": failed,
+    }
 
 
 def _decode_sys_arm_traj(data: bytes, status2: int) -> dict:
@@ -738,6 +846,9 @@ register_message(SUBSYS_SYS, SYS_UPLINK, "sys", "uplink", "obc", _decode_sys_upl
 register_message(SUBSYS_SYS, SYS_UPLINK_RAW, "sys", "uplink_raw", "obc", _decode_sys_uplink_raw)
 register_message(SUBSYS_SYS, SYS_ARM_LINK, "sys", "arm_link", "obc", _decode_sys_arm_link)
 register_message(SUBSYS_SYS, SYS_ARM_TRAJ, "sys", "arm_traj", "obc", _decode_sys_arm_traj)
+register_message(SUBSYS_SYS, SYS_ARM_FLIGHT, "sys", "arm_flight", "obc", _decode_sys_arm_flight)
+register_message(SUBSYS_SYS, SYS_CAMERA, "sys", "camera", "obc", _decode_sys_camera)
+register_message(SUBSYS_SYS, SYS_CAMERA_INFO, "sys", "camera_info", "obc", _decode_sys_camera_info)
 
 # NEUEN WERT HINZUFÜGEN — dreimal etwas, sonst nichts. Kraftsensor 1 oben ist
 # das gelebte Beispiel:

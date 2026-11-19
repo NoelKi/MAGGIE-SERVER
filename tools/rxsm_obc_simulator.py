@@ -60,7 +60,7 @@ UPLINK_FRAME_SIZE = 6
 # bewusst nicht mehr behandelt — sie laufen in den Unbekannt-Zweig.
 OP_MOTOR_OFF, OP_MOTOR_ON, OP_MOTOR_ZERO = 0x00, 0x01, 0x05
 OP_MOTOR_TURN, OP_MOTOR_GOTO = 0x06, 0x07
-OP_TEST_ENTER, OP_TEST_EXIT, OP_ABORT = 0x10, 0x11, 0x1F
+OP_TEST_ENTER, OP_TEST_EXIT = 0x10, 0x11
 OP_FORCE_TARE = 0x20
 
 # ── Motor (motor_hal.hpp) ───────────────────────────────────────────────────
@@ -82,8 +82,8 @@ COUNTS_PER_S_AT_FULL = 1500.0 * 255.0 / 120.0
 
 # ── Zustände (mission_state.hpp) ────────────────────────────────────────────
 # 1..4 sind für die frühere Flugsequenz reserviert und werden nicht gesendet.
-PRE_LAUNCH, ABORT, TEST = 0, 5, 6
-STATE_NAMES = {PRE_LAUNCH: "PRE_LAUNCH", ABORT: "ABORT", TEST: "TEST"}
+PRE_LAUNCH, TEST = 0, 6
+STATE_NAMES = {PRE_LAUNCH: "PRE_LAUNCH", TEST: "TEST"}
 
 TELEMETRY_HZ = 20
 SYS_HZ = 1
@@ -206,9 +206,6 @@ class ObcSimulator:
         if opcode == OP_TEST_EXIT:
             if self.state == TEST:
                 self._set_state(PRE_LAUNCH)
-            return
-        if opcode == OP_ABORT:
-            self._set_state(ABORT)
             return
         if opcode == OP_MOTOR_OFF:
             # Sicherheitskommando: zustandsunabhängig erlaubt (wie im OBC).
